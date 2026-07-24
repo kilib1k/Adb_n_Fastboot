@@ -66,12 +66,12 @@
 
 ### Option A — download the script
 1. Go to [Releases](https://github.com/kilib1k/Adb_n_Fastboot/releases).
-2. Download `AdbFastboot_v5.py` and `localization.json` into the same folder.
+2. Download `AdbFastboot.py` and `localization.json` into the same folder.
 3. Make sure `adb.exe` and `fastboot.exe` are in that folder (or in `PATH`).
 4. Run:
    ```cmd
    pip install PyQt5
-   python AdbFastboot_v5.py
+   python AdbFastboot.py
    ```
 
 ### Option B — clone the repo
@@ -79,7 +79,7 @@
 git clone https://github.com/kilib1k/Adb_n_Fastboot.git
 cd Adb_n_Fastboot
 pip install PyQt5
-python AdbFastboot_v5.py
+python AdbFastboot.py
 ```
 
 ---
@@ -90,18 +90,6 @@ python AdbFastboot_v5.py
 2. **Connect via USB**, accept the RSA prompt on the phone.
 3. **Run the program.** The status panel should switch from `Offline` to `ADB`.
 4. **Try the Device tab** — install an APK, open Logcat, or browse `/sdcard` via File Explorer.
-
-### Common commands reference
-
-| Action | Menu / button | Underlying command |
-|---|---|---|
-| Reboot to bootloader | Device → BOOTLOADER | `adb reboot bootloader` |
-| Reboot to recovery | Device → RECOVERY | `adb reboot recovery` |
-| Take screenshot | Device → 📸 Screenshot | `adb shell screencap -p /sdcard/screen.png` + `adb pull` |
-| Wireless connect | Device → Wireless ADB | `adb tcpip 5555` → `adb connect IP:5555` |
-| Disable bloatware | Device → Debloat Presets | `adb shell pm disable-user --user 0 <pkg>` |
-| Unlock bootloader | Device → UNLOCK BOOTLOADER | `fastboot flashing unlock` |
-| Flash GSI | GSI tab | `fastboot flash system system.img` (active slot) |
 
 ---
 
