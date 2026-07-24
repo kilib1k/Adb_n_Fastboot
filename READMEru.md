@@ -66,12 +66,12 @@
 
 ### Вариант A — скачать скрипт
 1. Зайди в [Releases](https://github.com/kilib1k/Adb_n_Fastboot/releases).
-2. Скачай `AdbFastboot_v5.py` и `localization.json` в одну папку.
+2. Скачай `AdbFastboot.py` и `localization.json` в одну папку.
 3. Убедись, что в этой папке лежат `adb.exe`, `fastboot.exe`, `scrcpy.exe` (или они в `PATH`).
 4. Запуск:
    ```cmd
    pip install PyQt5
-   python AdbFastboot_v5.py
+   python AdbFastboot.py
    ```
 
 ### Вариант B — клонировать репо
