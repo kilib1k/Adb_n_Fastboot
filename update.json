@@ -2,6 +2,6 @@
   "version": "5.0.0",
   "date": "2026-07-24",
   "size_kb": 174,
-  "download_url": "https://github.com/kilib1k/Adb_n_Fastboot/releases/download/v5.0/AdbFastboot.py",
+  "download_url": "https://github.com/kilib1k/Adb_n_Fastboot/releases/download/Release/AdbFastboot.py",
   "changelog": "v5.0 — What's new\n\n- Added debloat presets (Google/Carrier/AOSP/Samsung/Xiaomi)\n- Fixed reboot mode bug (uppercase bootloader → system reboot)\n\nThanks for using Community Edition!"
 }
