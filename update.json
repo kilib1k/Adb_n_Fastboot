@@ -3,5 +3,5 @@
   "date": "2026-07-24",
   "size_kb": 181,
   "download_url": "https://github.com/kilib1k/Adb_n_Fastboot/releases/download/Release/AdbFastboot.py",
-  "changelog": "v5.0 — What's new\n\n- Removed unnecessary code \n- Added colors to Logcat\n\nThanks for using Community Edition!"
+  "changelog": "v5.0 — What's new\n\n- Removed unnecessary code \n- Added colors to Logcat \n- Added Linux support\n\nThanks for using Community Edition!"
 }
