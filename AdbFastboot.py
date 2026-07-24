@@ -1,7 +1,7 @@
-########################################################
-# Adb & Fastboot by @kilib1k & @LineXin_Blossom        #
-# Community Edition v5 - Logcat, Wireless ADB, Explorer #
-########################################################
+###########################################
+# Adb & Fastboot by @kilib1k & @LineXin1  #
+# Community Edition v5.1                  #
+###########################################
 import sys
 import subprocess
 import threading
@@ -9,6 +9,7 @@ import os
 import json
 import re
 import shutil
+import platform
 import urllib.request
 import urllib.error
 from datetime import datetime
@@ -21,9 +22,38 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout
                             QTreeWidgetItem, QMenu, QHeaderView, QGridLayout, QLineEdit,
                             QSizePolicy, QPlainTextEdit)
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize, QSettings
-from PyQt5.QtGui import QFont, QIcon, QPalette, QColor
+from PyQt5.QtGui import (QFont, QIcon, QPalette, QColor,
+                         QTextCharFormat, QSyntaxHighlighter)
 
-CURRENT_VERSION = "5.0.0"
+CURRENT_VERSION = "5.1.0"
+
+# =====================================================================
+# Cross-platform helpers
+# =====================================================================
+IS_WINDOWS = platform.system() == 'Windows'
+
+# Кодировка вывода adb/fastboot: на Windows консоль использует cp866 (OEM Cyrillic),
+# на Linux/macOS — utf-8.
+ADB_ENCODING = 'cp866' if IS_WINDOWS else 'utf-8'
+
+
+def _make_startupinfo():
+    """Возвращает STARTUPINFO для скрытия всплывающей консоли на Windows.
+    На других ОС возвращает None — параметр startupinfo в subprocess принимает None."""
+    if IS_WINDOWS:
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        return si
+    return None
+
+
+def _run_subprocess(cmd, *, capture=True, timeout=None, shell=True):
+    """Универсальный запуск subprocess с правильной кодировкой и скрытием консоли."""
+    si = _make_startupinfo()
+    return subprocess.run(cmd, shell=shell, capture_output=capture,
+                          startupinfo=si, text=True,
+                          encoding=ADB_ENCODING, errors='ignore',
+                          timeout=timeout)
 UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/kilib1k/Adb_n_Fastboot/refs/heads/main/update.json"
 UPDATE_CHECK_INTERVAL_HOURS = 24  # авто-проверка не чаще чем раз в сутки
 
@@ -66,6 +96,48 @@ def _compare_versions(v1, v2):
     while len(b) < len(a):
         b.append(0)
     return (a > b) - (a < b)
+
+
+# =====================================================================
+# Logcat highlighter — раскрашивает строки по уровню (V/D/I/W/E/F)
+# =====================================================================
+class LogcatHighlighter(QSyntaxHighlighter):
+    """QSyntaxHighlighter для раскраски строк logcat по уровню лога.
+
+    Формат строки: "01-15 14:23:45.678 W/Tag( 1234): сообщение"
+    Применяет цвет ко всей строке в зависимости от уровня (V/D/I/W/E/F).
+    Использование QSyntaxHighlighter вместо HTML-форматирования намного быстрее
+    — форматирование применяется лениво при отрисовке, а не при вставке текста."""
+
+    # Цвета подобраны под тёмный фон консоли logcat (#0a0a0a)
+    LEVEL_CONFIG = [
+        ('V', QColor(150, 150, 150), False),   # Verbose — серый
+        ('D', QColor( 86, 156, 214), False),   # Debug   — голубой
+        ('I', QColor(102, 217, 138), False),   # Info    — зелёный
+        ('W', QColor(230, 192,  80), False),   # Warning — жёлтый
+        ('E', QColor(244,  90, 105), False),   # Error   — красный
+        ('F', QColor(255,  80,  80), True),    # Fatal   — ярко-красный + bold
+    ]
+
+    def __init__(self, document):
+        super().__init__(document)
+        self._rules = []
+        for level, color, bold in self.LEVEL_CONFIG:
+            fmt = QTextCharFormat()
+            fmt.setForeground(color)
+            if bold:
+                fmt.setFontWeight(QFont.Bold)
+            # Целиком красим строку: дата+время + LEVEL/... + сообщение
+            pattern = re.compile(
+                r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+' + level + r'/.*$'
+            )
+            self._rules.append((pattern, fmt))
+
+    def highlightBlock(self, text):
+        for pattern, fmt in self._rules:
+            if pattern.match(text):
+                self.setFormat(0, len(text), fmt)
+                return
 
 
 class UpdateDialog(QDialog):
@@ -165,7 +237,7 @@ class UpdateDialog(QDialog):
         """Скачивает новый .py поверх старого, старый переименовывает в .bak."""
         url = self.manifest.get('download_url')
         if not url:
-            QMessageBox.critical(self, "Error",
+            QMessageBox.critical(self, self.tr("error_title"),
                                  self.tr("update_no_download_url"))
             return
         try:
@@ -210,7 +282,7 @@ class UpdateDialog(QDialog):
         except Exception as e:
             self.btn_download.setEnabled(True)
             self.btn_download.setText(self.tr("update_btn_download"))
-            QMessageBox.critical(self, "Error",
+            QMessageBox.critical(self, self.tr("error_title"),
                                  self.tr("update_download_failed").format(err=str(e)))
 
 
@@ -229,12 +301,11 @@ class InstallThread(QThread):
             self.output_signal.emit(f"Starting: {self.description}")
             self.output_signal.emit(f"Command: {self.cmd}")
             
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si = _make_startupinfo()
             
             process = subprocess.Popen(self.cmd, shell=True, stdout=subprocess.PIPE, 
                                       stderr=subprocess.STDOUT, startupinfo=si, 
-                                      universal_newlines=True, encoding='cp866', errors='ignore')
+                                      universal_newlines=True, encoding=ADB_ENCODING, errors='ignore')
             
             for line in process.stdout:
                 self.output_signal.emit(line.strip())
@@ -258,29 +329,40 @@ class PackageManagerDialog(QDialog):
         self.packages = []
         self.package_states = {}
         self.init_ui()
-        
+
+    def tr(self, key):
+        """Локализация через parent (ADBLiteApp), иначе возвращает ключ."""
+        if self.parent and hasattr(self.parent, 'tr'):
+            return self.parent.tr(key)
+        return key
+
     def init_ui(self):
-        self.setWindowTitle(self.parent.tr("package_manager_title") if self.parent else "Package Manager - App Control")
+        self.setWindowTitle(self.tr("package_manager_title"))
         self.resize(900, 700)
         
         layout = QVBoxLayout()
         
-        info_label = QLabel(self.parent.tr("package_manager_title") if self.parent else "Manage Applications (Disable/Enable)")
+        info_label = QLabel(self.tr("package_manager_title"))
         info_label.setStyleSheet("font-weight: bold; font-size: 12px; padding: 5px;")
         layout.addWidget(info_label)
         
-        filter_group = QGroupBox(self.parent.tr("package_manager_filters") if self.parent else "Package Filters")
+        filter_group = QGroupBox(self.tr("package_manager_filters"))
         filter_layout = QHBoxLayout()
         
-        filter_layout.addWidget(QLabel(self.parent.tr("package_manager_filters") if self.parent else "Show:"))
+        filter_layout.addWidget(QLabel(self.tr("package_manager_show_label")))
         self.filter_combo = QComboBox()
-        self.filter_combo.addItems(["All Packages", "System Apps", "User Apps", "Disabled Apps", "Enabled Apps"])
+        # Используем setData для индексно-безопасной локализации
+        self.filter_combo.addItem(self.tr("package_manager_all_packages"), "all")
+        self.filter_combo.addItem(self.tr("package_manager_system_apps"), "system")
+        self.filter_combo.addItem(self.tr("package_manager_user_apps"), "user")
+        self.filter_combo.addItem(self.tr("package_manager_disabled_apps"), "disabled")
+        self.filter_combo.addItem(self.tr("package_manager_enabled_apps"), "enabled")
         self.filter_combo.currentTextChanged.connect(self.filter_packages)
         filter_layout.addWidget(self.filter_combo)
         
         filter_layout.addStretch()
         
-        filter_layout.addWidget(QLabel(self.parent.tr("package_manager_search") if self.parent else "Search:"))
+        filter_layout.addWidget(QLabel(self.tr("package_manager_search")))
         self.search_input = QComboBox()
         self.search_input.setEditable(True)
         self.search_input.setMinimumWidth(200)
@@ -288,7 +370,7 @@ class PackageManagerDialog(QDialog):
         self.search_input.lineEdit().textChanged.connect(self.filter_packages)
         filter_layout.addWidget(self.search_input)
         
-        self.btn_refresh_packages = QPushButton(self.parent.tr("package_manager_refresh") if self.parent else "🔄 Refresh")
+        self.btn_refresh_packages = QPushButton(self.tr("package_manager_refresh"))
         self.btn_refresh_packages.clicked.connect(self.load_packages)
         filter_layout.addWidget(self.btn_refresh_packages)
         
@@ -300,21 +382,21 @@ class PackageManagerDialog(QDialog):
         self.package_list.itemDoubleClicked.connect(self.toggle_package)
         layout.addWidget(self.package_list)
         
-        self.stats_label = QLabel(self.parent.tr("package_manager_loading") if self.parent else "Loading packages...")
+        self.stats_label = QLabel(self.tr("package_manager_loading"))
         self.stats_label.setStyleSheet("color: #888; padding: 5px;")
         layout.addWidget(self.stats_label)
         
         btn_layout = QHBoxLayout()
         
-        self.btn_disable_selected = QPushButton(self.parent.tr("package_manager_disable_selected") if self.parent else "🔴 DISABLE Selected")
+        self.btn_disable_selected = QPushButton(self.tr("package_manager_disable_selected"))
         self.btn_disable_selected.clicked.connect(self.disable_selected)
         btn_layout.addWidget(self.btn_disable_selected)
         
-        self.btn_enable_selected = QPushButton(self.parent.tr("package_manager_enable_selected") if self.parent else "🟢 ENABLE Selected")
+        self.btn_enable_selected = QPushButton(self.tr("package_manager_enable_selected"))
         self.btn_enable_selected.clicked.connect(self.enable_selected)
         btn_layout.addWidget(self.btn_enable_selected)
         
-        self.btn_toggle = QPushButton(self.parent.tr("package_manager_toggle_selected") if self.parent else "🔄 Toggle Selected")
+        self.btn_toggle = QPushButton(self.tr("package_manager_toggle_selected"))
         self.btn_toggle.clicked.connect(self.toggle_selected)
         btn_layout.addWidget(self.btn_toggle)
         
@@ -322,17 +404,17 @@ class PackageManagerDialog(QDialog):
         
         btn_layout2 = QHBoxLayout()
         
-        self.btn_disable_all_user = QPushButton(self.parent.tr("package_manager_disable_all_user") if self.parent else "Disable All User Apps")
+        self.btn_disable_all_user = QPushButton(self.tr("package_manager_disable_all_user"))
         self.btn_disable_all_user.clicked.connect(self.disable_all_user_apps)
         btn_layout2.addWidget(self.btn_disable_all_user)
         
-        self.btn_enable_all_disabled = QPushButton(self.parent.tr("package_manager_enable_all_disabled") if self.parent else "Enable All Disabled")
+        self.btn_enable_all_disabled = QPushButton(self.tr("package_manager_enable_all_disabled"))
         self.btn_enable_all_disabled.clicked.connect(self.enable_all_disabled)
         btn_layout2.addWidget(self.btn_enable_all_disabled)
         
         layout.addLayout(btn_layout2)
         
-        self.status_label = QLabel(self.parent.tr("package_manager_ready") if self.parent else "Ready")
+        self.status_label = QLabel(self.tr("package_manager_ready"))
         self.status_label.setStyleSheet("color: #888; padding: 5px;")
         layout.addWidget(self.status_label)
         
@@ -403,30 +485,29 @@ class PackageManagerDialog(QDialog):
             """)
     
     def load_packages(self):
-        self.status_label.setText("Loading packages...")
+        self.status_label.setText(self.tr("package_manager_loading"))
         self.package_list.clear()
         self.packages = []
         self.package_states = {}
         
         if not self.check_adb_connection():
-            self.status_label.setText("No ADB connection! Connect device and enable USB debugging.")
+            self.status_label.setText(self.tr("package_manager_no_adb"))
             return
         
         try:
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si = _make_startupinfo()
             
             result = subprocess.run('adb shell pm list packages', shell=True, capture_output=True, 
-                                   startupinfo=si, text=True, encoding='cp866', errors='ignore', timeout=10)
+                                   startupinfo=si, text=True, encoding=ADB_ENCODING, errors='ignore', timeout=10)
             
             result_disabled = subprocess.run('adb shell pm list packages -d', shell=True, capture_output=True, 
-                                            startupinfo=si, text=True, encoding='cp866', errors='ignore', timeout=10)
+                                            startupinfo=si, text=True, encoding=ADB_ENCODING, errors='ignore', timeout=10)
             
             result_system = subprocess.run('adb shell pm list packages -s', shell=True, capture_output=True, 
-                                          startupinfo=si, text=True, encoding='cp866', errors='ignore', timeout=10)
+                                          startupinfo=si, text=True, encoding=ADB_ENCODING, errors='ignore', timeout=10)
             
             result_enabled = subprocess.run('adb shell pm list packages -e', shell=True, capture_output=True, 
-                                           startupinfo=si, text=True, encoding='cp866', errors='ignore', timeout=10)
+                                           startupinfo=si, text=True, encoding=ADB_ENCODING, errors='ignore', timeout=10)
             
             disabled_packages = set()
             for line in result_disabled.stdout.split('\n'):
@@ -470,17 +551,22 @@ class PackageManagerDialog(QDialog):
             total_system = len(system_packages)
             total_user = len(self.packages) - total_system
             
-            stats = f"📊 Total: {len(self.packages)} | System: {total_system} | User: {total_user} | Disabled: {total_disabled}"
+            stats = self.tr("package_manager_stats").format(
+                total=len(self.packages),
+                system=total_system,
+                user=total_user,
+                disabled=total_disabled
+            )
             self.stats_label.setText(stats)
-            self.status_label.setText(f"✅ Loaded {len(self.packages)} packages")
+            self.status_label.setText(self.tr("package_manager_loaded").format(count=len(self.packages)))
             
             if self.parent:
-                self.parent.log(f"Loaded {len(self.packages)} packages ({total_disabled} disabled)")
+                self.parent.log(self.tr("package_manager_loaded_log").format(count=len(self.packages), disabled=total_disabled))
             
         except subprocess.TimeoutExpired:
-            self.status_label.setText("❌ Timeout loading packages!")
+            self.status_label.setText(self.tr("package_manager_timeout"))
         except Exception as e:
-            self.status_label.setText(f"❌ Error: {str(e)}")
+            self.status_label.setText(self.tr("package_manager_error") + " " + str(e))
             if self.parent:
                 self.parent.log(f"Package loading error: {str(e)}")
     
@@ -488,7 +574,7 @@ class PackageManagerDialog(QDialog):
         if not self.packages:
             return
             
-        filter_type = self.filter_combo.currentText()
+        filter_type = self.filter_combo.currentData() or "all"
         search_text = self.search_input.currentText().lower()
         
         self.package_list.clear()
@@ -497,13 +583,13 @@ class PackageManagerDialog(QDialog):
         for package in self.packages:
             state = self.package_states[package]
             
-            if filter_type == "System Apps" and not state['system']:
+            if filter_type == "system" and not state['system']:
                 continue
-            elif filter_type == "User Apps" and state['system']:
+            elif filter_type == "user" and state['system']:
                 continue
-            elif filter_type == "Disabled Apps" and not state['disabled']:
+            elif filter_type == "disabled" and not state['disabled']:
                 continue
-            elif filter_type == "Enabled Apps" and state['disabled']:
+            elif filter_type == "enabled" and state['disabled']:
                 continue
             
             if search_text and search_text not in package.lower():
@@ -532,15 +618,14 @@ class PackageManagerDialog(QDialog):
             self.package_list.addItem(item)
             filtered_count += 1
         
-        self.status_label.setText(f"📋 Showing {filtered_count} packages")
+        self.status_label.setText(self.tr("package_manager_showing").format(count=filtered_count))
     
     def get_app_name(self, package):
         try:
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si = _make_startupinfo()
             result = subprocess.run(f'adb shell dumpsys package {package} | grep -A 1 "ApplicationInfo" | grep "name="', 
                                    shell=True, capture_output=True, startupinfo=si, 
-                                   text=True, encoding='cp866', errors='ignore', timeout=3)
+                                   text=True, encoding=ADB_ENCODING, errors='ignore', timeout=3)
             if result.stdout:
                 match = re.search(r'name=(.+?)[,\n]', result.stdout)
                 if match:
@@ -553,10 +638,9 @@ class PackageManagerDialog(QDialog):
     
     def check_adb_connection(self):
         try:
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si = _make_startupinfo()
             result = subprocess.run('adb devices', shell=True, capture_output=True, 
-                                   startupinfo=si, text=True, encoding='cp866', errors='ignore')
+                                   startupinfo=si, text=True, encoding=ADB_ENCODING, errors='ignore')
             
             lines = result.stdout.strip().split('\n')
             for line in lines[1:]:
@@ -578,27 +662,30 @@ class PackageManagerDialog(QDialog):
         if self.parent:
             cmd = f'adb shell pm disable-user --user 0 {package}'
             self.parent.run_with_thread(cmd, f'Disabling {package}')
-            self.parent.log(f"🔴 Disabling package: {package}")
+            self.parent.log(self.tr("package_manager_disabling_log").format(package=package))
     
     def enable_package(self, package):
         if self.parent:
             cmd = f'adb shell pm enable {package}'
             self.parent.run_with_thread(cmd, f'Enabling {package}')
-            self.parent.log(f"🟢 Enabling package: {package}")
+            self.parent.log(self.tr("package_manager_enabling_log").format(package=package))
     
     def disable_selected(self):
         selected = self.get_selected_packages()
         if not selected:
-            QMessageBox.warning(self, "No Selection", "Please select at least one package!")
+            QMessageBox.warning(self, self.tr("package_manager_no_selection"),
+                                self.tr("package_manager_select_at_least"))
             return
         
         system_selected = [p for p in selected if self.package_states[p]['system']]
         warning = ""
         if system_selected:
-            warning = f"\n\n⚠ Warning: {len(system_selected)} system app(s) selected!\nDisabling system apps may cause issues!"
+            warning = "\n\n" + self.tr("package_manager_warning_system").format(len(system_selected))
         
-        reply = QMessageBox.question(self, "Confirm Disable", 
-                                     f"Disable {len(selected)} package(s)?{warning}\n\n"
+        reply = QMessageBox.question(self, self.tr("package_manager_confirm_disable"), 
+                                     self.tr("package_manager_confirm_disable_msg").format(
+                                         count=len(selected), warning=warning
+                                     ) + "\n\n" +
                                      f"{', '.join(selected[:5])}{'...' if len(selected) > 5 else ''}",
                                      QMessageBox.Yes | QMessageBox.No)
         
@@ -606,16 +693,17 @@ class PackageManagerDialog(QDialog):
             for package in selected:
                 self.disable_package(package)
             QTimer.singleShot(2000, self.load_packages)
-            self.status_label.setText(f"Disabling {len(selected)} packages...")
+            self.status_label.setText(self.tr("package_manager_disabling").format(count=len(selected)))
     
     def enable_selected(self):
         selected = self.get_selected_packages()
         if not selected:
-            QMessageBox.warning(self, "No Selection", "Please select at least one package!")
+            QMessageBox.warning(self, self.tr("package_manager_no_selection"),
+                                self.tr("package_manager_select_at_least"))
             return
         
-        reply = QMessageBox.question(self, "Confirm Enable", 
-                                     f"Enable {len(selected)} package(s)?\n\n"
+        reply = QMessageBox.question(self, self.tr("package_manager_confirm_enable"), 
+                                     self.tr("package_manager_confirm_enable_msg").format(count=len(selected)) + "\n\n" +
                                      f"{', '.join(selected[:5])}{'...' if len(selected) > 5 else ''}",
                                      QMessageBox.Yes | QMessageBox.No)
         
@@ -623,20 +711,24 @@ class PackageManagerDialog(QDialog):
             for package in selected:
                 self.enable_package(package)
             QTimer.singleShot(2000, self.load_packages)
-            self.status_label.setText(f"Enabling {len(selected)} packages...")
+            self.status_label.setText(self.tr("package_manager_enabling").format(count=len(selected)))
     
     def toggle_selected(self):
         selected = self.get_selected_packages()
         if not selected:
-            QMessageBox.warning(self, "No Selection", "Please select at least one package!")
+            QMessageBox.warning(self, self.tr("package_manager_no_selection"),
+                                self.tr("package_manager_select_at_least"))
             return
         
         to_disable = [p for p in selected if not self.package_states[p]['disabled']]
         to_enable = [p for p in selected if self.package_states[p]['disabled']]
         
-        reply = QMessageBox.question(self, "Confirm Toggle", 
-                                     f"Toggle {len(selected)} package(s):\n\n"
-                                     f"Disable: {len(to_disable)}\nEnable: {len(to_enable)}",
+        reply = QMessageBox.question(self, self.tr("package_manager_confirm_toggle"), 
+                                     self.tr("package_manager_confirm_toggle_msg").format(
+                                         count=len(selected),
+                                         disable=len(to_disable),
+                                         enable=len(to_enable)
+                                     ),
                                      QMessageBox.Yes | QMessageBox.No)
         
         if reply == QMessageBox.Yes:
@@ -652,9 +744,11 @@ class PackageManagerDialog(QDialog):
             if self.package_states[package]['disabled']:
                 self.enable_package(package)
             else:
-                reply = QMessageBox.question(self, "Confirm Disable", 
-                                           f"Disable {package}?\n\n"
-                                           f"{'⚠ System app!' if self.package_states[package]['system'] else 'User app'}",
+                type_text = self.tr("package_manager_system_app_warn") if self.package_states[package]['system'] else self.tr("package_manager_user_app")
+                reply = QMessageBox.question(self, self.tr("package_manager_confirm_disable_single"), 
+                                           self.tr("package_manager_confirm_disable_single_msg").format(
+                                               package=package, type=type_text
+                                           ),
                                            QMessageBox.Yes | QMessageBox.No)
                 if reply == QMessageBox.Yes:
                     self.disable_package(package)
@@ -664,38 +758,40 @@ class PackageManagerDialog(QDialog):
         user_apps = [p for p in self.packages if not self.package_states[p]['system'] and not self.package_states[p]['disabled']]
         
         if not user_apps:
-            QMessageBox.information(self, "No Apps", "No enabled user apps found!")
+            QMessageBox.information(self, self.tr("package_manager_no_apps"),
+                                    self.tr("package_manager_no_enabled_user"))
             return
         
-        reply = QMessageBox.question(self, "Confirm Disable All", 
-                                     f"Disable ALL {len(user_apps)} user applications?\n\n"
-                                     "⚠ This may affect device functionality!\n"
-                                     "⚠ Some apps may be necessary for system operation!",
+        reply = QMessageBox.question(self, self.tr("package_manager_confirm_disable_all"), 
+                                     self.tr("package_manager_confirm_disable_all_msg").format(count=len(user_apps)),
                                      QMessageBox.Yes | QMessageBox.No)
         
         if reply == QMessageBox.Yes:
             for package in user_apps:
                 self.disable_package(package)
-            self.status_label.setText(f"Disabling {len(user_apps)} user apps...")
-            QMessageBox.information(self, "Info", f"Started disabling {len(user_apps)} apps.\nClick Refresh to see changes.")
+            self.status_label.setText(self.tr("package_manager_disabling").format(count=len(user_apps)))
+            QMessageBox.information(self, self.tr("package_manager_info"),
+                                    self.tr("package_manager_disabling_started").format(count=len(user_apps)))
             QTimer.singleShot(3000, self.load_packages)
     
     def enable_all_disabled(self):
         disabled_apps = [p for p in self.packages if self.package_states[p]['disabled']]
         
         if not disabled_apps:
-            QMessageBox.information(self, "No Apps", "No disabled apps found!")
+            QMessageBox.information(self, self.tr("package_manager_no_apps"),
+                                    self.tr("package_manager_no_disabled"))
             return
         
-        reply = QMessageBox.question(self, "Confirm Enable All", 
-                                     f"Enable ALL {len(disabled_apps)} disabled applications?",
+        reply = QMessageBox.question(self, self.tr("package_manager_confirm_enable_all"), 
+                                     self.tr("package_manager_confirm_enable_all_msg").format(count=len(disabled_apps)),
                                      QMessageBox.Yes | QMessageBox.No)
         
         if reply == QMessageBox.Yes:
             for package in disabled_apps:
                 self.enable_package(package)
-            self.status_label.setText(f"Enabling {len(disabled_apps)} apps...")
-            QMessageBox.information(self, "Info", f"Started enabling {len(disabled_apps)} apps.\nClick Refresh to see changes.")
+            self.status_label.setText(self.tr("package_manager_enabling").format(count=len(disabled_apps)))
+            QMessageBox.information(self, self.tr("package_manager_info"),
+                                    self.tr("package_manager_enabling_started").format(count=len(disabled_apps)))
             QTimer.singleShot(3000, self.load_packages)
     
     def update_search_history(self):
@@ -712,14 +808,20 @@ class PartitionManagerDialog(QDialog):
         self.parent = parent
         self.partitions = []
         self.init_ui()
-        
+
+    def tr(self, key):
+        """Локализация через parent (ADBLiteApp), иначе возвращает ключ."""
+        if self.parent and hasattr(self.parent, 'tr'):
+            return self.parent.tr(key)
+        return key
+
     def init_ui(self):
-        self.setWindowTitle("Partition Manager")
+        self.setWindowTitle(self.tr("partition_manager_title"))
         self.resize(700, 600)
         
         layout = QVBoxLayout()
         
-        info_label = QLabel("Select partitions to flash or erase:")
+        info_label = QLabel(self.tr("partition_manager_info"))
         info_label.setStyleSheet("font-weight: bold; font-size: 12px;")
         layout.addWidget(info_label)
         
@@ -729,15 +831,15 @@ class PartitionManagerDialog(QDialog):
         
         btn_layout = QHBoxLayout()
         
-        self.btn_refresh = QPushButton("🔄 Refresh Partitions")
+        self.btn_refresh = QPushButton(self.tr("partition_manager_refresh"))
         self.btn_refresh.clicked.connect(self.get_partitions)
         btn_layout.addWidget(self.btn_refresh)
         
-        self.btn_select_all = QPushButton("✅ Select All")
+        self.btn_select_all = QPushButton(self.tr("partition_manager_select_all"))
         self.btn_select_all.clicked.connect(self.select_all)
         btn_layout.addWidget(self.btn_select_all)
         
-        self.btn_deselect_all = QPushButton("❌ Deselect All")
+        self.btn_deselect_all = QPushButton(self.tr("partition_manager_deselect_all"))
         self.btn_deselect_all.clicked.connect(self.deselect_all)
         btn_layout.addWidget(self.btn_deselect_all)
         
@@ -745,21 +847,21 @@ class PartitionManagerDialog(QDialog):
         
         btn_layout2 = QHBoxLayout()
         
-        self.btn_flash = QPushButton("📱 Flash Selected")
+        self.btn_flash = QPushButton(self.tr("partition_manager_flash"))
         self.btn_flash.clicked.connect(self.flash_selected)
         btn_layout2.addWidget(self.btn_flash)
         
-        self.btn_erase = QPushButton("🗑️ Erase Selected")
+        self.btn_erase = QPushButton(self.tr("partition_manager_erase"))
         self.btn_erase.clicked.connect(self.erase_selected)
         btn_layout2.addWidget(self.btn_erase)
         
-        self.btn_select_file = QPushButton("📂 Select Image")
+        self.btn_select_file = QPushButton(self.tr("partition_manager_select_image"))
         self.btn_select_file.clicked.connect(self.select_image_file)
         btn_layout2.addWidget(self.btn_select_file)
         
         layout.addLayout(btn_layout2)
         
-        self.status_label = QLabel("Ready")
+        self.status_label = QLabel(self.tr("partition_manager_ready"))
         self.status_label.setStyleSheet("color: #888; padding: 5px;")
         layout.addWidget(self.status_label)
         
@@ -815,7 +917,7 @@ class PartitionManagerDialog(QDialog):
             """)
         
     def get_partitions(self):
-        self.status_label.setText("Getting partitions list...")
+        self.status_label.setText(self.tr("partition_manager_getting"))
         self.partition_list.clear()
         self.partitions = []
         
@@ -825,8 +927,7 @@ class PartitionManagerDialog(QDialog):
                 'fastboot oem device-info',
             ]
             
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si = _make_startupinfo()
             
             partitions_set = set()
             
@@ -834,7 +935,7 @@ class PartitionManagerDialog(QDialog):
                 try:
                     result = subprocess.run(cmd, shell=True, capture_output=True, 
                                           startupinfo=si, timeout=5, 
-                                          text=True, encoding='cp866', errors='ignore')
+                                          text=True, encoding=ADB_ENCODING, errors='ignore')
                     output = result.stdout + result.stderr
                     
                     patterns = [
@@ -871,17 +972,17 @@ class PartitionManagerDialog(QDialog):
                 item.setCheckState(Qt.Unchecked)
                 self.partition_list.addItem(item)
             
-            self.status_label.setText(f"Found {len(self.partitions)} partitions")
+            self.status_label.setText(self.tr("partition_manager_found").format(count=len(self.partitions)))
             
             if len(self.partitions) == 0:
-                self.status_label.setText("No partitions found! Make sure device is in fastboot mode.")
+                self.status_label.setText(self.tr("partition_manager_not_found"))
                 if self.parent:
-                    self.parent.log("Warning: Could not detect partitions")
-                
+                    self.parent.log(self.tr("partition_manager_warn_log"))
+            
         except Exception as e:
-            self.status_label.setText(f"Error: {str(e)}")
+            self.status_label.setText(self.tr("partition_manager_error") + " " + str(e))
             if self.parent:
-                self.parent.log(f"Partition detection error: {str(e)}")
+                self.parent.log(self.tr("partition_manager_detect_error").format(error=str(e)))
             
     def get_selected_partitions(self):
         selected = []
@@ -892,34 +993,37 @@ class PartitionManagerDialog(QDialog):
         return selected
         
     def select_image_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, 'Select Image File', '', 
-                                                   'Image Files (*.img);;All Files (*.*)')
+        file_path, _ = QFileDialog.getOpenFileName(self, self.tr("partition_manager_select_image_title"), '',
+                                                   self.tr("partition_manager_image_files"))
         if file_path:
             self.image_file_path = file_path
-            self.status_label.setText(f"Selected: {os.path.basename(file_path)}")
+            self.status_label.setText(self.tr("partition_manager_selected_image").format(name=os.path.basename(file_path)))
             
     def flash_selected(self):
         selected = self.get_selected_partitions()
         if not selected:
-            QMessageBox.warning(self, "No Selection", "Please select at least one partition!")
+            QMessageBox.warning(self, self.tr("partition_manager_no_selection"),
+                                self.tr("partition_manager_select_at_least"))
             return
             
         if not hasattr(self, 'image_file_path') or not self.image_file_path:
-            file_path, _ = QFileDialog.getOpenFileName(self, 'Select Image File', '', 
-                                                       'Image Files (*.img);;All Files (*.*)')
+            file_path, _ = QFileDialog.getOpenFileName(self, self.tr("partition_manager_select_image_title"), '',
+                                                       self.tr("partition_manager_image_files"))
             if not file_path:
                 return
             self.image_file_path = file_path
             
         if not os.path.exists(self.image_file_path):
-            QMessageBox.warning(self, "File Not Found", f"Image file not found:\n{self.image_file_path}")
+            QMessageBox.warning(self, self.tr("partition_manager_file_not_found"),
+                                self.tr("partition_manager_file_not_found_msg").format(path=self.image_file_path))
             return
             
-        reply = QMessageBox.question(self, "Confirm Flash", 
-                                    f"Flash {len(selected)} partition(s)?\n\n"
-                                    f"Partitions: {', '.join(selected)}\n"
-                                    f"Image: {os.path.basename(self.image_file_path)}\n\n"
-                                    "⚠ Warning: This can brick your device if wrong!",
+        reply = QMessageBox.question(self, self.tr("partition_manager_confirm_flash"),
+                                    self.tr("partition_manager_confirm_flash_msg").format(
+                                        count=len(selected),
+                                        partitions=', '.join(selected),
+                                        image=os.path.basename(self.image_file_path)
+                                    ),
                                     QMessageBox.Yes | QMessageBox.No)
         
         if reply == QMessageBox.Yes:
@@ -930,21 +1034,22 @@ class PartitionManagerDialog(QDialog):
             cmd_string = ' && '.join(commands)
             if self.parent:
                 self.parent.run_with_thread(cmd_string, f'Flashing {len(selected)} partitions')
-            self.status_label.setText(f"Flashing {len(selected)} partitions...")
+            self.status_label.setText(self.tr("partition_manager_flashing").format(count=len(selected)))
             if self.parent:
-                self.parent.log(f"Flashing partitions: {', '.join(selected)}")
+                self.parent.log(self.tr("partition_manager_flashing_log").format(partitions=', '.join(selected)))
             
     def erase_selected(self):
         selected = self.get_selected_partitions()
         if not selected:
-            QMessageBox.warning(self, "No Selection", "Please select at least one partition!")
+            QMessageBox.warning(self, self.tr("partition_manager_no_selection"),
+                                self.tr("partition_manager_select_at_least"))
             return
             
-        reply = QMessageBox.question(self, "Confirm Erase", 
-                                    f"ERASE {len(selected)} partition(s)?\n\n"
-                                    f"Partitions: {', '.join(selected)}\n\n"
-                                    "⚠⚠⚠ THIS WILL DELETE ALL DATA IN THESE PARTITIONS! ⚠⚠⚠\n\n"
-                                    "This action is IRREVERSIBLE!",
+        reply = QMessageBox.question(self, self.tr("partition_manager_confirm_erase"),
+                                    self.tr("partition_manager_confirm_erase_msg").format(
+                                        count=len(selected),
+                                        partitions=', '.join(selected)
+                                    ),
                                     QMessageBox.Yes | QMessageBox.No)
         
         if reply == QMessageBox.Yes:
@@ -955,28 +1060,41 @@ class PartitionManagerDialog(QDialog):
             cmd_string = ' && '.join(commands)
             if self.parent:
                 self.parent.run_with_thread(cmd_string, f'Erasing {len(selected)} partitions')
-            self.status_label.setText(f"Erasing {len(selected)} partitions...")
+            self.status_label.setText(self.tr("partition_manager_erasing").format(count=len(selected)))
             if self.parent:
-                self.parent.log(f"Erasing partitions: {', '.join(selected)}")
+                self.parent.log(self.tr("partition_manager_erasing_log").format(partitions=', '.join(selected)))
 
 class LogcatThread(QThread):
     """Поток для потокового чтения adb logcat. Использует пакетную передачу строк."""
     lines_signal = pyqtSignal(list)
     status_signal = pyqtSignal(str)
 
-    def __init__(self, extra_args=""):
+    def __init__(self, extra_args="", parent=None):
         super().__init__()
         self.extra_args = extra_args
+        self._parent = parent
         self._running = True
+
+    def _tr(self, key, **kwargs):
+        """Локализация строк статуса. Если есть parent с tr — используем, иначе возвращаем ключ."""
+        if self._parent and hasattr(self._parent, 'tr'):
+            text = self._parent.tr(key)
+        else:
+            text = key
+        if kwargs:
+            try:
+                return text.format(**kwargs)
+            except Exception:
+                return text
+        return text
 
     def run(self):
         try:
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si = _make_startupinfo()
             cmd = 'adb logcat -v time'
             if self.extra_args:
                 cmd += ' ' + self.extra_args
-            self.status_signal.emit(f"Starting: {cmd}")
+            self.status_signal.emit(self._tr("logcat_starting", cmd=cmd))
             process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
                                        stderr=subprocess.STDOUT, startupinfo=si,
                                        universal_newlines=True, encoding='utf-8',
@@ -998,9 +1116,9 @@ class LogcatThread(QThread):
             if batch:
                 self.lines_signal.emit(batch)
             process.wait()
-            self.status_signal.emit("Logcat stopped")
+            self.status_signal.emit(self._tr("logcat_stopped"))
         except Exception as e:
-            self.status_signal.emit(f"Error: {str(e)}")
+            self.status_signal.emit(self._tr("logcat_error_prefix", error=str(e)))
 
     def stop(self):
         self._running = False
@@ -1023,37 +1141,50 @@ class LogcatDialog(QDialog):
         self._total_seen = 0
         self.init_ui()
 
+    def tr(self, key):
+        """Локализация через parent (ADBLiteApp), иначе возвращает ключ."""
+        if self.parent and hasattr(self.parent, 'tr'):
+            return self.parent.tr(key)
+        return key
+
     def init_ui(self):
-        title = self.parent.tr("logcat_title") if self.parent else "Logcat - Android Log Viewer"
+        title = self.tr("logcat_title")
         self.setWindowTitle(title)
         self.resize(900, 650)
 
         layout = QVBoxLayout()
 
         # Фильтры
-        filter_group = QGroupBox(self.parent.tr("logcat_filters") if self.parent else "Filters")
+        filter_group = QGroupBox(self.tr("logcat_filters"))
         fl = QGridLayout()
 
-        fl.addWidget(QLabel("Level:"), 0, 0)
+        fl.addWidget(QLabel(self.tr("logcat_level")), 0, 0)
         self.level_combo = QComboBox()
-        self.level_combo.addItems(["All", "Verbose (V)", "Debug (D)", "Info (I)",
-                                   "Warning (W)", "Error (E)", "Fatal (F)"])
+        # Используем itemData для индексно-безопасной локализации:
+        # 0=All, 1=V, 2=D, 3=I, 4=W, 5=E, 6=F
+        self.level_combo.addItem(self.tr("logcat_all"), "")
+        self.level_combo.addItem(self.tr("logcat_verbose"), "V")
+        self.level_combo.addItem(self.tr("logcat_debug"), "D")
+        self.level_combo.addItem(self.tr("logcat_info"), "I")
+        self.level_combo.addItem(self.tr("logcat_warning"), "W")
+        self.level_combo.addItem(self.tr("logcat_error_level"), "E")
+        self.level_combo.addItem(self.tr("logcat_fatal"), "F")
         self.level_combo.currentTextChanged.connect(self.restart_logcat)
         fl.addWidget(self.level_combo, 0, 1)
 
-        fl.addWidget(QLabel("Tag:"), 0, 2)
+        fl.addWidget(QLabel(self.tr("logcat_tag")), 0, 2)
         self.tag_input = QLineEdit()
-        self.tag_input.setPlaceholderText("e.g. ActivityManager")
+        self.tag_input.setPlaceholderText(self.tr("logcat_tag_placeholder"))
         fl.addWidget(self.tag_input, 0, 3)
 
-        fl.addWidget(QLabel("PID:"), 1, 0)
+        fl.addWidget(QLabel(self.tr("logcat_pid")), 1, 0)
         self.pid_input = QLineEdit()
-        self.pid_input.setPlaceholderText("e.g. 1234")
+        self.pid_input.setPlaceholderText(self.tr("logcat_pid_placeholder"))
         fl.addWidget(self.pid_input, 1, 1)
 
-        fl.addWidget(QLabel("Search:"), 1, 2)
+        fl.addWidget(QLabel(self.tr("logcat_search")), 1, 2)
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Substring filter (case-insensitive)")
+        self.search_input.setPlaceholderText(self.tr("logcat_search_placeholder"))
         self.search_input.textChanged.connect(self.on_search_changed)
         fl.addWidget(self.search_input, 1, 3)
 
@@ -1063,26 +1194,26 @@ class LogcatDialog(QDialog):
         # Кнопки управления
         btn_layout = QHBoxLayout()
 
-        self.btn_start = QPushButton("\u25b6 Start")
+        self.btn_start = QPushButton(self.tr("logcat_start"))
         self.btn_start.clicked.connect(self.start_logcat)
         btn_layout.addWidget(self.btn_start)
 
-        self.btn_stop = QPushButton("\u23f9 Stop")
+        self.btn_stop = QPushButton(self.tr("logcat_stop"))
         self.btn_stop.clicked.connect(self.stop_logcat)
         self.btn_stop.setEnabled(False)
         btn_layout.addWidget(self.btn_stop)
 
-        self.btn_pause = QPushButton("\u23f8 Pause")
+        self.btn_pause = QPushButton(self.tr("logcat_pause"))
         self.btn_pause.clicked.connect(self.toggle_pause)
         self.btn_pause.setCheckable(True)
         self.btn_pause.setEnabled(False)
         btn_layout.addWidget(self.btn_pause)
 
-        self.btn_clear = QPushButton("\U0001F5D1 Clear")
+        self.btn_clear = QPushButton(self.tr("logcat_clear"))
         self.btn_clear.clicked.connect(self.clear_log)
         btn_layout.addWidget(self.btn_clear)
 
-        self.btn_save = QPushButton("\U0001F4BE Save Log")
+        self.btn_save = QPushButton(self.tr("logcat_save"))
         self.btn_save.clicked.connect(self.save_log)
         btn_layout.addWidget(self.btn_save)
 
@@ -1105,8 +1236,11 @@ class LogcatDialog(QDialog):
         """)
         layout.addWidget(self.log_view)
 
+        # Подключаем подсветку синтаксиса — раскраска по уровням V/D/I/W/E/F
+        self.highlighter = LogcatHighlighter(self.log_view.document())
+
         # Статус
-        self.status_label = QLabel("Ready")
+        self.status_label = QLabel(self.tr("logcat_ready"))
         self.status_label.setStyleSheet("color: #888; padding: 4px;")
         layout.addWidget(self.status_label)
 
@@ -1158,12 +1292,9 @@ class LogcatDialog(QDialog):
 
     def build_args(self):
         args = []
-        level_map = {
-            "Verbose (V)": "V", "Debug (D)": "D", "Info (I)": "I",
-            "Warning (W)": "W", "Error (E)": "E", "Fatal (F)": "F"
-        }
-        level_text = self.level_combo.currentText()
-        level = level_map.get(level_text)
+        # Используем itemData (буква уровня или пустая строка для "All") —
+        # это позволяет корректно работать с любым переводом.
+        level = self.level_combo.currentData()
         if level:
             args.append(f"*:{level}")
 
@@ -1185,7 +1316,7 @@ class LogcatDialog(QDialog):
             return
         args = self.build_args()
         self.clear_log()
-        self.logcat_thread = LogcatThread(args)
+        self.logcat_thread = LogcatThread(args, parent=self)
         self.logcat_thread.lines_signal.connect(self.on_lines_received)
         self.logcat_thread.status_signal.connect(self.on_status)
         self.logcat_thread.start()
@@ -1221,7 +1352,7 @@ class LogcatDialog(QDialog):
         if len(self._pending_lines) > self.MAX_PENDING:
             # оставляем последние 200, остальное выбрасываем
             self._pending_lines = self._pending_lines[-200:]
-            self._pending_lines.append("--- [dropped lines due to overflow] ---")
+            self._pending_lines.append(self.tr("logcat_dropped"))
         self._pending_lines.extend(lines)
         self._total_seen += len(lines)
 
@@ -1246,7 +1377,10 @@ class LogcatDialog(QDialog):
         self._flush_count = getattr(self, '_flush_count', 0) + 1
         if self._flush_count % 4 == 0:
             self.status_label.setText(
-                f"Showing ~{min(self._total_seen, self.MAX_VIEW_LINES)} of {self._total_seen} lines"
+                self.tr("logcat_showing").format(
+                    shown=min(self._total_seen, self.MAX_VIEW_LINES),
+                    total=self._total_seen
+                )
             )
 
     def on_search_changed(self, text):
@@ -1254,7 +1388,7 @@ class LogcatDialog(QDialog):
 
     def toggle_pause(self):
         self.paused = self.btn_pause.isChecked()
-        self.btn_pause.setText("\u25b6 Resume" if self.paused else "\u23f8 Pause")
+        self.btn_pause.setText(self.tr("logcat_resume") if self.paused else self.tr("logcat_pause"))
         if self.paused:
             self.flush_timer.stop()
             self._pending_lines = []
@@ -1269,17 +1403,19 @@ class LogcatDialog(QDialog):
     def save_log(self):
         text = self.log_view.toPlainText()
         if not text.strip():
-            QMessageBox.information(self, "Empty", "Log is empty.")
+            QMessageBox.information(self, self.tr("logcat_empty"), self.tr("logcat_empty_msg"))
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Save Log", "logcat.txt",
-                                               "Text Files (*.txt);;All Files (*.*)")
+        path, _ = QFileDialog.getSaveFileName(self, self.tr("logcat_save_title"),
+                                               self.tr("logcat_save_default"),
+                                               self.tr("logcat_save_text_files"))
         if path:
             try:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(text)
-                QMessageBox.information(self, "Saved", f"Log saved to:\n{path}")
+                QMessageBox.information(self, self.tr("logcat_saved"),
+                                        self.tr("logcat_saved_msg").format(path=path))
             except Exception as e:
-                QMessageBox.critical(self, "Error", str(e))
+                QMessageBox.critical(self, self.tr("logcat_error"), str(e))
 
     def on_status(self, msg):
         self.status_label.setText(msg)
@@ -1303,22 +1439,26 @@ class WirelessAdbDialog(QDialog):
         self.parent = parent
         self.init_ui()
 
+    def tr(self, key):
+        """Локализация через parent (ADBLiteApp), иначе возвращает ключ."""
+        if self.parent and hasattr(self.parent, 'tr'):
+            return self.parent.tr(key)
+        return key
+
     def init_ui(self):
-        title = self.parent.tr("wireless_adb_title") if self.parent else "Wireless ADB - Connect via Wi-Fi"
+        title = self.tr("wireless_adb_title")
         self.setWindowTitle(title)
         self.resize(500, 400)
 
         layout = QVBoxLayout()
 
-        info_label = QLabel(self.parent.tr("wireless_adb_info") if self.parent else
-                            "Connect your device via Wi-Fi instead of USB.\n"
-                            "Requirements: device and PC on the same network, USB debugging enabled.")
+        info_label = QLabel(self.tr("wireless_adb_info"))
         info_label.setWordWrap(True)
         info_label.setStyleSheet("padding: 8px; background-color: rgba(255,255,255,0.05); border-radius: 6px;")
         layout.addWidget(info_label)
 
         # Текущее состояние
-        status_group = QGroupBox(self.parent.tr("wireless_adb_status") if self.parent else "Current Status")
+        status_group = QGroupBox(self.tr("wireless_adb_status"))
         sl = QVBoxLayout()
         self.status_display = QTextEdit()
         self.status_display.setReadOnly(True)
@@ -1329,26 +1469,26 @@ class WirelessAdbDialog(QDialog):
         layout.addWidget(status_group)
 
         # Включение TCP/IP
-        enable_group = QGroupBox(self.parent.tr("wireless_adb_enable") if self.parent else "Enable TCP/IP (USB required)")
+        enable_group = QGroupBox(self.tr("wireless_adb_enable"))
         el = QGridLayout()
-        el.addWidget(QLabel("Port:"), 0, 0)
+        el.addWidget(QLabel(self.tr("wireless_adb_port")), 0, 0)
         self.port_input = QLineEdit("5555")
         self.port_input.setMaximumWidth(100)
         el.addWidget(self.port_input, 0, 1)
-        self.btn_enable_tcpip = QPushButton("📱 Enable TCP/IP")
+        self.btn_enable_tcpip = QPushButton(self.tr("wireless_adb_enable_btn"))
         self.btn_enable_tcpip.clicked.connect(self.enable_tcpip)
         el.addWidget(self.btn_enable_tcpip, 0, 2)
         enable_group.setLayout(el)
         layout.addWidget(enable_group)
 
         # Подключение
-        connect_group = QGroupBox(self.parent.tr("wireless_adb_connect") if self.parent else "Connect to Device")
+        connect_group = QGroupBox(self.tr("wireless_adb_connect"))
         cl = QGridLayout()
-        cl.addWidget(QLabel("IP:Port:"), 0, 0)
+        cl.addWidget(QLabel(self.tr("wireless_adb_ip_port")), 0, 0)
         self.ip_input = QLineEdit()
-        self.ip_input.setPlaceholderText("e.g. 192.168.1.100:5555")
+        self.ip_input.setPlaceholderText(self.tr("wireless_adb_ip_placeholder"))
         cl.addWidget(self.ip_input, 0, 1)
-        self.btn_connect = QPushButton("🔗 Connect")
+        self.btn_connect = QPushButton(self.tr("wireless_adb_connect_btn"))
         self.btn_connect.clicked.connect(self.connect_device)
         cl.addWidget(self.btn_connect, 0, 2)
         connect_group.setLayout(cl)
@@ -1356,15 +1496,15 @@ class WirelessAdbDialog(QDialog):
 
         # Управление
         btn_layout = QHBoxLayout()
-        self.btn_refresh = QPushButton("🔄 Refresh Status")
+        self.btn_refresh = QPushButton(self.tr("wireless_adb_refresh_btn"))
         self.btn_refresh.clicked.connect(self.refresh_status)
         btn_layout.addWidget(self.btn_refresh)
 
-        self.btn_disconnect = QPushButton("❌ Disconnect")
+        self.btn_disconnect = QPushButton(self.tr("wireless_adb_disconnect_btn"))
         self.btn_disconnect.clicked.connect(self.disconnect_device)
         btn_layout.addWidget(self.btn_disconnect)
 
-        self.btn_disconnect_all = QPushButton("🗑 Disconnect All")
+        self.btn_disconnect_all = QPushButton(self.tr("wireless_adb_disconnect_all_btn"))
         self.btn_disconnect_all.clicked.connect(self.disconnect_all)
         btn_layout.addWidget(self.btn_disconnect_all)
 
@@ -1414,11 +1554,10 @@ class WirelessAdbDialog(QDialog):
 
     def _run_adb(self, cmd, timeout=8):
         try:
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si = _make_startupinfo()
             result = subprocess.run(cmd, shell=True, capture_output=True,
                                     startupinfo=si, text=True,
-                                    encoding='utf-8', errors='ignore', timeout=timeout)
+                                    encoding=ADB_ENCODING, errors='ignore', timeout=timeout)
             return (result.stdout or "") + (result.stderr or "")
         except subprocess.TimeoutExpired:
             return "Timeout"
@@ -1428,23 +1567,21 @@ class WirelessAdbDialog(QDialog):
     def enable_tcpip(self):
         port = self.port_input.text().strip() or "5555"
         if self.parent:
-            self.parent.log(f"Enabling TCP/IP on port {port}...")
+            self.parent.log(self.tr("wireless_adb_enabling").format(port=port))
         out = self._run_adb(f'adb tcpip {port}')
         if self.parent:
             self.parent.log(f"adb tcpip {port}: {out.strip()}")
-        QMessageBox.information(self, "TCP/IP",
-                                f"TCP/IP mode enabled on port {port}.\n\n"
-                                "Now find your device IP in:\n"
-                                "Settings → About phone → Status → IP address\n\n"
-                                "Then enter IP:port below and click Connect.")
+        QMessageBox.information(self, self.tr("wireless_adb_tcpip_title"),
+                                self.tr("wireless_adb_tcpip_msg").format(port=port))
 
     def connect_device(self):
         target = self.ip_input.text().strip()
         if not target:
-            QMessageBox.warning(self, "Input Required", "Enter IP:Port first")
+            QMessageBox.warning(self, self.tr("wireless_adb_input_required"),
+                                self.tr("wireless_adb_enter_ip"))
             return
         if self.parent:
-            self.parent.log(f"Connecting to {target}...")
+            self.parent.log(self.tr("wireless_adb_connecting").format(target=target))
         out = self._run_adb(f'adb connect {target}')
         if self.parent:
             self.parent.log(f"adb connect: {out.strip()}")
@@ -1453,16 +1590,17 @@ class WirelessAdbDialog(QDialog):
     def disconnect_device(self):
         target = self.ip_input.text().strip()
         if not target:
-            QMessageBox.warning(self, "Input Required", "Enter IP:Port to disconnect")
+            QMessageBox.warning(self, self.tr("wireless_adb_input_required"),
+                                self.tr("wireless_adb_enter_ip_disconnect"))
             return
         out = self._run_adb(f'adb disconnect {target}')
         if self.parent:
-            self.parent.log(f"adb disconnect: {out.strip()}")
+            self.parent.log(self.tr("wireless_adb_disconnecting").format(target=target))
         QTimer.singleShot(500, self.refresh_status)
 
     def disconnect_all(self):
-        reply = QMessageBox.question(self, "Confirm",
-                                     "Disconnect from ALL wireless devices?",
+        reply = QMessageBox.question(self, self.tr("wireless_adb_confirm_disconnect_all"),
+                                     self.tr("wireless_adb_disconnect_all_msg"),
                                      QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.Yes:
             out = self._run_adb('adb disconnect')
@@ -1472,7 +1610,7 @@ class WirelessAdbDialog(QDialog):
 
     def refresh_status(self):
         out = self._run_adb('adb devices')
-        self.status_display.setText(out.strip() or "No output")
+        self.status_display.setText(out.strip() or self.tr("wireless_adb_no_output"))
 
 
 class AdbExplorerDialog(QDialog):
@@ -1484,8 +1622,14 @@ class AdbExplorerDialog(QDialog):
         self.current_path = "/sdcard"
         self.init_ui()
 
+    def tr(self, key):
+        """Локализация через parent (ADBLiteApp), иначе возвращает ключ."""
+        if self.parent and hasattr(self.parent, 'tr'):
+            return self.parent.tr(key)
+        return key
+
     def init_ui(self):
-        title = self.parent.tr("explorer_title") if self.parent else "File Explorer - Android Device"
+        title = self.tr("explorer_title")
         self.setWindowTitle(title)
         self.resize(850, 600)
 
@@ -1493,11 +1637,11 @@ class AdbExplorerDialog(QDialog):
 
         # Текущий путь + навигация
         nav_layout = QHBoxLayout()
-        self.btn_up = QPushButton("⬆ Up")
+        self.btn_up = QPushButton(self.tr("explorer_up"))
         self.btn_up.clicked.connect(self.go_up)
         nav_layout.addWidget(self.btn_up)
 
-        self.btn_home = QPushButton("🏠 /sdcard")
+        self.btn_home = QPushButton(self.tr("explorer_home"))
         self.btn_home.clicked.connect(lambda: self.navigate("/sdcard"))
         nav_layout.addWidget(self.btn_home)
 
@@ -1506,7 +1650,7 @@ class AdbExplorerDialog(QDialog):
                                        "background-color: rgba(255,255,255,0.05); border-radius: 4px;")
         nav_layout.addWidget(self.path_label, 1)
 
-        self.btn_refresh = QPushButton("🔄")
+        self.btn_refresh = QPushButton(self.tr("explorer_refresh_btn"))
         self.btn_refresh.clicked.connect(self.refresh)
         nav_layout.addWidget(self.btn_refresh)
 
@@ -1514,7 +1658,7 @@ class AdbExplorerDialog(QDialog):
 
         # Быстрые пути
         quick_layout = QHBoxLayout()
-        for name, path in [("Root", "/"), ("/data", "/data"), ("/system", "/system"),
+        for name, path in [(self.tr("explorer_root"), "/"), ("/data", "/data"), ("/system", "/system"),
                            ("/cache", "/cache"), ("/persist", "/persist")]:
             btn = QPushButton(name)
             btn.clicked.connect(lambda checked, p=path: self.navigate(p))
@@ -1524,7 +1668,13 @@ class AdbExplorerDialog(QDialog):
 
         # Дерево файлов
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Name", "Size", "Permissions", "Date", "Owner"])
+        self.tree.setHeaderLabels([
+            self.tr("explorer_column_name"),
+            self.tr("explorer_column_size"),
+            self.tr("explorer_column_perms"),
+            self.tr("explorer_column_date"),
+            self.tr("explorer_column_owner"),
+        ])
         self.tree.setRootIsDecorated(False)
         self.tree.setSortingEnabled(True)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1541,25 +1691,25 @@ class AdbExplorerDialog(QDialog):
         # Кнопки операций
         btn_layout = QHBoxLayout()
 
-        self.btn_push = QPushButton("📤 Push from PC")
+        self.btn_push = QPushButton(self.tr("explorer_push"))
         self.btn_push.clicked.connect(self.push_file)
         btn_layout.addWidget(self.btn_push)
 
-        self.btn_pull = QPushButton("📥 Pull to PC")
+        self.btn_pull = QPushButton(self.tr("explorer_pull"))
         self.btn_pull.clicked.connect(self.pull_file)
         btn_layout.addWidget(self.btn_pull)
 
-        self.btn_delete = QPushButton("🗑 Delete")
+        self.btn_delete = QPushButton(self.tr("explorer_delete"))
         self.btn_delete.clicked.connect(self.delete_selected)
         btn_layout.addWidget(self.btn_delete)
 
-        self.btn_mkdir = QPushButton("📁 New Folder")
+        self.btn_mkdir = QPushButton(self.tr("explorer_new_folder"))
         self.btn_mkdir.clicked.connect(self.make_dir)
         btn_layout.addWidget(self.btn_mkdir)
 
         layout.addLayout(btn_layout)
 
-        self.status_label = QLabel("Ready")
+        self.status_label = QLabel(self.tr("explorer_ready"))
         self.status_label.setStyleSheet("color: #888; padding: 4px;")
         layout.addWidget(self.status_label)
 
@@ -1619,12 +1769,11 @@ class AdbExplorerDialog(QDialog):
 
     def _run_adb_shell(self, cmd, timeout=10):
         try:
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si = _make_startupinfo()
             full = f'adb shell "{cmd}"'
             result = subprocess.run(full, shell=True, capture_output=True,
                                     startupinfo=si, text=True,
-                                    encoding='utf-8', errors='ignore', timeout=timeout)
+                                    encoding=ADB_ENCODING, errors='ignore', timeout=timeout)
             return (result.stdout or "") + (result.stderr or "")
         except subprocess.TimeoutExpired:
             return "TIMEOUT"
@@ -1647,13 +1796,13 @@ class AdbExplorerDialog(QDialog):
 
     def refresh(self):
         self.tree.clear()
-        self.status_label.setText(f"Loading {self.current_path}...")
+        self.status_label.setText(self.tr("explorer_loading").format(path=self.current_path))
 
         escaped_path = self.current_path.replace('"', '\\"')
         output = self._run_adb_shell(f'ls -la "{escaped_path}" 2>&1')
 
         if output.startswith("ERROR") or "TIMEOUT" in output:
-            self.status_label.setText(f"Error: {output[:200]}")
+            self.status_label.setText(self.tr("explorer_error_load").format(output[:200]))
             return
 
         entries = []
@@ -1692,7 +1841,7 @@ class AdbExplorerDialog(QDialog):
             self.tree.addTopLevelItem(item)
 
         self.path_label.setText(self.current_path)
-        self.status_label.setText(f"{len(entries)} items")
+        self.status_label.setText(self.tr("explorer_items").format(count=len(entries)))
 
     def navigate(self, path):
         self.current_path = path
@@ -1727,43 +1876,51 @@ class AdbExplorerDialog(QDialog):
             return
         menu = QMenu(self)
 
+        # Используем setData для индексно-безопасной локализации
         if len(items) == 1 and items[0].data(0, Qt.UserRole)[0] == 'file':
-            menu.addAction("📥 Pull to PC")
-        menu.addAction("📤 Push file here")
-        menu.addAction("🗑 Delete selected")
+            act_pull = menu.addAction(self.tr("explorer_pull_menu"))
+            act_pull.setData("pull")
+        act_push = menu.addAction(self.tr("explorer_push_menu"))
+        act_push.setData("push")
+        act_delete = menu.addAction(self.tr("explorer_delete_menu"))
+        act_delete.setData("delete")
         menu.addSeparator()
-        menu.addAction("🔄 Refresh")
+        act_refresh = menu.addAction(self.tr("explorer_refresh_menu"))
+        act_refresh.setData("refresh")
 
         action = menu.exec_(self.tree.viewport().mapToGlobal(pos))
         if not action:
             return
-        if action.text().startswith("📥"):
+        action_key = action.data()
+        if action_key == "pull":
             self.pull_file()
-        elif action.text().startswith("📤"):
+        elif action_key == "push":
             self.push_file()
-        elif action.text().startswith("🗑"):
+        elif action_key == "delete":
             self.delete_selected()
-        elif action.text().startswith("🔄"):
+        elif action_key == "refresh":
             self.refresh()
 
     def push_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select File to Push", "", "All Files (*.*)")
+        file_path, _ = QFileDialog.getOpenFileName(self, self.tr("explorer_push_title"),
+                                                   "", self.tr("explorer_push_all_files"))
         if not file_path:
             return
         fname = os.path.basename(file_path)
         cmd = f'adb push "{file_path}" "{self.current_path}/{fname}"'
         if self.parent:
-            self.parent.log(f"Pushing {fname} to {self.current_path}...")
+            self.parent.log(self.tr("explorer_pushing").format(name=fname, path=self.current_path))
             self.parent.run_with_thread(cmd, f"Push {fname}")
-        self.status_label.setText(f"Pushing {fname}...")
+        self.status_label.setText(self.tr("explorer_pushing_status").format(name=fname))
         QTimer.singleShot(1500, self.refresh)
 
     def pull_file(self):
         items = self.get_selected_items()
         if not items:
-            QMessageBox.warning(self, "No Selection", "Select a file first")
+            QMessageBox.warning(self, self.tr("explorer_pull_no_selection"),
+                                self.tr("explorer_pull_select_file"))
             return
-        save_dir = QFileDialog.getExistingDirectory(self, "Select Destination Folder on PC")
+        save_dir = QFileDialog.getExistingDirectory(self, self.tr("explorer_pull_dest"))
         if not save_dir:
             return
         for item in items:
@@ -1775,18 +1932,20 @@ class AdbExplorerDialog(QDialog):
             local_path = os.path.join(save_dir, name)
             cmd = f'adb pull "{remote_path}" "{local_path}"'
             if self.parent:
-                self.parent.log(f"Pulling {name} to {save_dir}...")
+                self.parent.log(self.tr("explorer_pulling").format(name=name, dir=save_dir))
                 self.parent.run_with_thread(cmd, f"Pull {name}")
-        self.status_label.setText("Pulling files...")
+        self.status_label.setText(self.tr("explorer_pulling_status"))
 
     def delete_selected(self):
         items = self.get_selected_items()
         if not items:
             return
         names = [it.data(0, Qt.UserRole)[1] for it in items if it.data(0, Qt.UserRole)]
-        reply = QMessageBox.question(self, "Confirm Delete",
-                                     f"Delete {len(names)} item(s)?\n\n" + "\n".join(names[:10]) +
-                                     ("\n..." if len(names) > 10 else ""),
+        reply = QMessageBox.question(self, self.tr("explorer_confirm_delete"),
+                                     self.tr("explorer_confirm_delete_msg").format(
+                                         count=len(names),
+                                         names="\n".join(names[:10]) + ("\n..." if len(names) > 10 else "")
+                                     ),
                                      QMessageBox.Yes | QMessageBox.No)
         if reply != QMessageBox.Yes:
             return
@@ -1794,20 +1953,22 @@ class AdbExplorerDialog(QDialog):
             cmd = f'rm -rf "{self.current_path}/{name}"'
             out = self._run_adb_shell(cmd)
             if self.parent:
-                self.parent.log(f"Deleted: {name}")
+                self.parent.log(self.tr("explorer_deleted").format(name=name))
         QTimer.singleShot(500, self.refresh)
 
     def make_dir(self):
-        name, ok = QInputDialog.getText(self, "New Folder", "Folder name:")
+        name, ok = QInputDialog.getText(self, self.tr("explorer_new_folder_title"),
+                                        self.tr("explorer_new_folder_prompt"))
         if not ok or not name:
             return
         cmd = f'mkdir -p "{self.current_path}/{name}"'
         out = self._run_adb_shell(cmd)
         if "ERROR" in out or "denied" in out.lower():
-            QMessageBox.critical(self, "Error", f"Cannot create folder:\n{out}")
+            QMessageBox.critical(self, self.tr("explorer_new_folder_error"),
+                                self.tr("explorer_new_folder_error_msg").format(output=out))
         else:
             if self.parent:
-                self.parent.log(f"Created folder: {name}")
+                self.parent.log(self.tr("explorer_created_folder").format(name=name))
             QTimer.singleShot(300, self.refresh)
 
 
@@ -2163,12 +2324,11 @@ class DebloatDialog(QDialog):
     def _run_adb(self, cmd, timeout=10):
         """Запуск adb-команды и возврат (stdout+stderr) текста."""
         try:
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si = _make_startupinfo()
             full = cmd if cmd.startswith('adb ') else f'adb {cmd}'
             result = subprocess.run(full, shell=True, capture_output=True,
                                     startupinfo=si, text=True,
-                                    encoding='cp866', errors='ignore', timeout=timeout)
+                                    encoding=ADB_ENCODING, errors='ignore', timeout=timeout)
             return (result.stdout or '') + (result.stderr or '')
         except subprocess.TimeoutExpired:
             return 'TIMEOUT'
@@ -2416,7 +2576,7 @@ class ADBLiteApp(QMainWindow):
         icon_path = self.get_icon_path()
         if icon_path and os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
-        self.setWindowTitle('ADB & FASTBOOT - Community Edition v5')
+        self.setWindowTitle('ADB & FASTBOOT - Community Edition v5.1')
         self.resize(1000, 750)
         self.setMinimumSize(800, 600)
         
@@ -2546,12 +2706,9 @@ class ADBLiteApp(QMainWindow):
         }
         
         self.current_theme = "Gray (Default)"
-        self.scrcpy_path = self.get_scrcpy_path()
         self.gsi_image_path = None
         self.current_lang = "en"
         self.lang = {}
-        self.load_language()
-        #Нахуй надо self.apply_language_to_ui()
         
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -2582,7 +2739,7 @@ class ADBLiteApp(QMainWindow):
         
         # Загружаем язык и применяем перевод ПОСЛЕ создания всех виджетов
         self.load_language()
-        self.update_ui_texts(update_theme_selector=True)  # Вместо apply_language_to_ui
+        self.update_ui_texts(update_theme_selector=True)
         
         self.apply_theme()
         
@@ -2615,14 +2772,6 @@ class ADBLiteApp(QMainWindow):
                 return path
         return None
         
-    def apply_language_to_ui(self):
-        """Принудительно применяет перевод UI при старте"""
-        self.update_ui_texts(update_theme_selector=True)
-        # Устанавливаем язык в комбобоксе
-        for i in range(self.lang_selector.count()):
-            if self.lang_selector.itemText(i) == self.current_lang:
-                self.lang_selector.setCurrentIndex(i)
-                break
     def load_language(self):
         # Получаем путь к директории где находится скрипт
         if getattr(sys, 'frozen', False):
@@ -2645,21 +2794,6 @@ class ADBLiteApp(QMainWindow):
     def tr(self, key):
         return self.lang.get(key, key)
 
-    def change_language(self, lang_code):
-        self.current_lang = lang_code
-        self.load_language()
-        # Сохраняем текущую тему до обновления UI
-        current_theme = self.current_theme
-        self.update_ui_texts(update_theme_selector=True)
-        # Восстанавливаем выбранную тему по оригинальному названию
-        self.set_theme_by_original_name(current_theme)
-        # Обновляем статус устройства
-        self.check_device_status()
-        if hasattr(self, 'console') and self.console:
-            try:
-                self.console.append(f"> Language: {lang_code}")
-            except:
-                pass
     def change_theme(self):
         # Получаем выбранный переведенный текст
         selected_translated = self.theme_selector.currentText()
@@ -2676,21 +2810,24 @@ class ADBLiteApp(QMainWindow):
         # Заголовок окна
         self.setWindowTitle(self.tr("window_title"))
         
+        # Заголовок приложения (верхняя панель)
+        title_label = self.findChild(QLabel, "title_label")
+        if title_label:
+            title_label.setText(self.tr("title_text"))
+        
         # Вкладки
         self.tab_widget.setTabText(0, self.tr("device_tab"))
         self.tab_widget.setTabText(1, self.tr("gsi_tab"))
         self.tab_widget.setTabText(2, self.tr("partitions_tab"))
         self.tab_widget.setTabText(3, self.tr("info_tab"))
         
-        # Верхняя панель - обновляем все QLabel
-        for child in self.findChildren(QLabel):
-            text = child.text()
-            if text == "Theme" or text == "Тема":
-                child.setText(self.tr("theme"))
-            elif text == "Status" or text == "Статус":
-                child.setText(self.tr("status"))
-            elif text == "Language" or text == "Язык":
-                child.setText(self.tr("language"))
+        # Верхняя панель - обновляем все QLabel по objectName
+        for obj_name, key in [("lang_label", "language"),
+                              ("theme_label", "theme"),
+                              ("status_label", "status_title")]:
+            child = self.findChild(QLabel, obj_name)
+            if child:
+                child.setText(self.tr(key))
         
         # Группы на вкладке Device - ищем по objectName
         reboot_group = self.findChild(QGroupBox, "reboot_group")
@@ -2728,6 +2865,8 @@ class ADBLiteApp(QMainWindow):
         # Консоль — кнопка Save Log
         if hasattr(self, 'save_log_btn'):
             self.save_log_btn.setText(self.tr("save_console_log"))
+        if hasattr(self, 'clear_console_btn'):
+            self.clear_console_btn.setText(self.tr("clear"))
         
         # Кнопка проверки обновлений в About
         if hasattr(self, 'btn_check_updates'):
@@ -2753,15 +2892,21 @@ class ADBLiteApp(QMainWindow):
             wipe_group.setTitle(self.tr("data_management"))
         
         # GSI информационный текст
-        for child in self.findChildren(QLabel):
-            if "GSI (Generic System Image) installation tool" in child.text() or "Инструмент установки GSI" in child.text():
-                child.setText(self.tr("gsi_tool_text"))
+        gsi_info_label = self.findChild(QLabel, "gsi_info_label")
+        if gsi_info_label:
+            gsi_info_label.setText(self.tr("gsi_tool_text"))
         
         self.btn_select_gsi.setText(self.tr("select_gsi"))
         self.btn_check_slot.setText(self.tr("check_slot"))
         self.btn_install_gsi_ab.setText(self.tr("ab_device"))
         self.btn_install_gsi_aonly.setText(self.tr("aonly_device"))
         self.btn_wipe_data.setText(self.tr("wipe_data"))
+        
+        # Метки GSI
+        if hasattr(self, 'gsi_label'):
+            self.gsi_label.setText(self.tr("no_gsi_image"))
+        if hasattr(self, 'slot_info_label'):
+            self.slot_info_label.setText(self.tr("check_slot_text"))
         
         # Partition вкладка
         self.btn_partition_manager_quick.setText(self.tr("open_partition_manager"))
@@ -2771,30 +2916,22 @@ class ADBLiteApp(QMainWindow):
         if hasattr(self, 'partition_instruction_text'):
             self.partition_instruction_text.setText(self.tr("partition_guide_text"))
         
-        # Текст гайда в Partition вкладке
-        for child in self.findChildren(QTextEdit):
-            if "PARTITION MANAGER GUIDE" in child.toPlainText() or "РУКОВОДСТВО ПО МЕНЕДЖЕРУ РАЗДЕЛОВ" in child.toPlainText():
-                child.setText(self.tr("partition_guide_text"))
-        
         # Info вкладка
         self.btn_device_info.setText(self.tr("device_info"))
         self.info_display.setPlaceholderText(self.tr("click_to_see_details"))
         
-        # About текст
-        about_frame = self.findChild(QFrame, "about_frame")
-        if about_frame:
-            for child in about_frame.findChildren(QLabel):
-                if "About" in child.text() or "О программе" in child.text():
-                    child.setText(self.tr("about_title"))
-                elif "Created by:" in child.text() or "Создано:" in child.text():
-                    child.setText(self.tr("about_text"))
+        # About — используем objectName вместо text-matching
+        about_title_label = self.findChild(QLabel, "about_title_label")
+        if about_title_label:
+            about_title_label.setText(self.tr("about_title"))
+        about_text_label = self.findChild(QLabel, "about_text_label")
+        if about_text_label:
+            about_text_label.setText(self.tr("about_text"))
         
-        # Консоль
-        for child in self.findChildren(QLabel):
-            if child.text() == "Console Log" or child.text() == "Консоль лога":
-                child.setText(self.tr("console_log"))
-        
-        self.clear_console_btn.setText(self.tr("clear"))
+        # Консоль — используем objectName
+        console_label = self.findChild(QLabel, "console_label")
+        if console_label:
+            console_label.setText(self.tr("console_log"))
         
         # Обновляем названия тем в комбобоксе
         if update_theme_selector:
@@ -2819,7 +2956,8 @@ class ADBLiteApp(QMainWindow):
         panel.setFrameStyle(QFrame.StyledPanel)
         layout = QHBoxLayout(panel)
         
-        title_label = QLabel("ADB & FASTBOOT - Community Edition v5")
+        title_label = QLabel("ADB & FASTBOOT - Community Edition v5.1")
+        title_label.setObjectName("title_label")
         title_label.setStyleSheet("font-size: 16px; font-weight: bold;")
         layout.addWidget(title_label)
         
@@ -2976,6 +3114,7 @@ class ADBLiteApp(QMainWindow):
         info_frame.setFrameStyle(QFrame.StyledPanel)
         info_layout = QHBoxLayout(info_frame)
         info_label = QLabel("GSI (Generic System Image) installation tool")
+        info_label.setObjectName("gsi_info_label")
         info_label.setStyleSheet("font-weight: bold;")
         info_layout.addWidget(info_label)
         layout.addWidget(info_frame)
@@ -3082,10 +3221,12 @@ class ADBLiteApp(QMainWindow):
         about_layout = QVBoxLayout(about_frame)
         
         about_title = QLabel("About")
+        about_title.setObjectName("about_title_label")
         about_title.setStyleSheet("font-weight: bold; font-size: 12px;")
         about_layout.addWidget(about_title)
         
-        about_text = QLabel("ADB & FASTBOOT - Community Edition\nCreated by: @LineXin_Blossom & @kilib1k\nVersion: v5.0 (Logcat, Wireless ADB, File Explorer)\n© 2026 Community Edition")
+        about_text = QLabel("ADB & FASTBOOT - Community Edition\nCreated by: @LineXin_Blossom & @kilib1k\nVersion: v5.1 (Logcat, Wireless ADB, File Explorer)\n© 2026 Community Edition")
+        about_text.setObjectName("about_text_label")
         about_text.setWordWrap(True)
         about_layout.addWidget(about_text)
         
@@ -3108,6 +3249,7 @@ class ADBLiteApp(QMainWindow):
         
         console_header = QHBoxLayout()
         console_label = QLabel("Console Log")
+        console_label.setObjectName("console_label")
         console_label.setStyleSheet("font-weight: bold; font-size: 12px;")
         console_header.addWidget(console_label)
         
@@ -3140,42 +3282,56 @@ class ADBLiteApp(QMainWindow):
     
     def clear_console(self):
         self.console.clear()
-        self.log("Console cleared")
+        self.log(self.tr("console_cleared"))
 
     def save_console_log(self):
         """Сохраняет содержимое консоли в текстовый файл"""
         text = self.console.toPlainText()
         if not text.strip():
-            QMessageBox.information(self, "Empty", "Console is empty.")
+            QMessageBox.information(self, self.tr("console_empty"), self.tr("console_empty_msg"))
             return
         # имя по умолчанию с датой/временем
         default_name = f"console_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        path, _ = QFileDialog.getSaveFileName(self, "Save Console Log", default_name,
-                                               "Text Files (*.txt);;All Files (*.*)")
+        path, _ = QFileDialog.getSaveFileName(self, self.tr("console_save_title"), default_name,
+                                               self.tr("console_save_text_files"))
         if path:
             try:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(text)
-                self.log(f"Log saved: {path}")
-                QMessageBox.information(self, "Saved", f"Console log saved to:\n{path}")
+                self.log(self.tr("console_log_saved").format(path=path))
+                QMessageBox.information(self, self.tr("console_saved"),
+                                        self.tr("console_saved_msg").format(path=path))
             except Exception as e:
-                QMessageBox.critical(self, "Error", str(e))
+                QMessageBox.critical(self, self.tr("error_title"), str(e))
     
     def get_scrcpy_path(self):
+        # 1. Сначала ищем в PATH (Linux/macOS: обычно ставится пакетным менеджером,
+        #    Windows: может быть в PATH если установщик добавил).
+        which = shutil.which('scrcpy')
+        if which:
+            return which
+
+        # 2. Ищем в директории программы (Windows: портативная версия рядом с .exe/.py).
         if getattr(sys, 'frozen', False):
-            base_path = sys._MEIPASS
+            base_path = getattr(sys, '_MEIPASS', None) or os.path.dirname(sys.executable)
         else:
             base_path = os.path.dirname(os.path.abspath(__file__))
-            
+
         possible_paths = [
+            # Windows
             os.path.join(base_path, 'scrcpy', 'scrcpy.exe'),
             os.path.join(base_path, 'scrcpy.exe'),
             os.path.join(base_path, 'tools', 'scrcpy', 'scrcpy.exe'),
             os.path.join(base_path, 'bin', 'scrcpy.exe'),
+            # Linux/macOS
+            os.path.join(base_path, 'scrcpy', 'scrcpy'),
+            os.path.join(base_path, 'scrcpy'),
+            os.path.join(base_path, 'bin', 'scrcpy'),
+            os.path.join(base_path, 'tools', 'scrcpy', 'scrcpy'),
         ]
-        
+
         for path in possible_paths:
-            if os.path.exists(path):
+            if os.path.exists(path) and os.access(path, os.X_OK):
                 return path
         return None
     
@@ -3389,20 +3545,19 @@ class ADBLiteApp(QMainWindow):
     def on_install_finished(self, success, message):
         self.show_progress(False)
         if success:
-            self.show_message_box("Success", message, QMessageBox.Information)
+            self.show_message_box(self.tr("success_title"), message, QMessageBox.Information)
         else:
-            self.show_message_box("Error", message, QMessageBox.Critical)
+            self.show_message_box(self.tr("error_title"), message, QMessageBox.Critical)
         self.log(message)
     
     def run_cmd_thread(self, cmd):
         def target():
             self.log(f'Executing: {cmd}')
             try:
-                si = subprocess.STARTUPINFO()
-                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                si = _make_startupinfo()
                 process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, startupinfo=si)
                 for line in process.stdout:
-                    decoded_line = line.decode('cp866', errors='ignore').strip()
+                    decoded_line = line.decode(ADB_ENCODING, errors='ignore').strip()
                     if decoded_line:
                         self.console.append(decoded_line)
                 process.wait()
@@ -3413,14 +3568,13 @@ class ADBLiteApp(QMainWindow):
     
     def check_device_status(self):
         try:
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si = _make_startupinfo()
             res_adb = subprocess.run('adb devices', shell=True, capture_output=True, startupinfo=si)
-            adb_out = (res_adb.stdout + res_adb.stderr).decode('cp866', errors='ignore')
+            adb_out = (res_adb.stdout + res_adb.stderr).decode(ADB_ENCODING, errors='ignore')
             res_fb = subprocess.run('fastboot devices', shell=True, capture_output=True, startupinfo=si)
-            fb_out = (res_fb.stdout + res_fb.stderr).decode('cp866', errors='ignore')
+            fb_out = (res_fb.stdout + res_fb.stderr).decode(ADB_ENCODING, errors='ignore')
             
-            if 'не является внутренней' in adb_out or 'not recognized' in adb_out:
+            if 'не является внутренней' in adb_out or 'not recognized' in adb_out or 'command not found' in adb_out:
                 self.device_state = 'ADB MISSING'
             else:
                 if 'sideload' in adb_out:
@@ -3429,10 +3583,10 @@ class ADBLiteApp(QMainWindow):
                     self.device_state = 'RECOVERY'
                 elif 'List of devices attached' in adb_out and len(adb_out.strip().split('\n')) > 1:
                     self.device_state = 'ADB'
-                elif fb_out.strip() and (not ('не является' in fb_out or 'not recognized' in fb_out)):
+                elif fb_out.strip() and (not ('не является' in fb_out or 'not recognized' in fb_out or 'command not found' in fb_out)):
                     try:
                         res_var = subprocess.run('fastboot getvar version 2>&1', shell=True, capture_output=True, startupinfo=si, timeout=3)
-                        var_out = (res_var.stdout + res_var.stderr).decode('cp866', errors='ignore').lower()
+                        var_out = (res_var.stdout + res_var.stderr).decode(ADB_ENCODING, errors='ignore').lower()
                         if 'fastbootd' in var_out:
                             self.device_state = 'FASTBOOTD'
                         else:
@@ -3532,67 +3686,52 @@ class ADBLiteApp(QMainWindow):
     def reboot_to_fastbootd(self):
         if self.device_state == 'ADB':
             self.run_cmd_thread('adb reboot fastboot')
-            self.log('Rebooting to fastbootd...')
+            self.log(self.tr("reboot_fastbootd_log"))
         elif self.device_state == 'FASTBOOT':
             self.run_cmd_thread('fastboot reboot fastboot')
-            self.log('Rebooting to fastbootd...')
+            self.log(self.tr("reboot_fastbootd_log"))
         else:
-            self.show_message_box('Wrong Mode', 'Works in ADB or FASTBOOT mode!', QMessageBox.Warning)
-    
-    def reboot_recovery_from_fastboot(self):
-        if self.device_state == 'FASTBOOT' or self.device_state == 'FASTBOOTD':
-            self.run_cmd_thread('fastboot reboot recovery')
-            self.log('Rebooting to recovery...')
-        else:
-            self.show_message_box('Wrong Mode', 'Works only in FASTBOOT mode!', QMessageBox.Warning)
+            self.show_message_box(self.tr("wrong_mode"), self.tr("wrong_mode_adb_fastboot"), QMessageBox.Warning)
     
     def install_apk(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, 'Select APK', '', 'Android Package (*.apk)')
+        file_path, _ = QFileDialog.getOpenFileName(self, self.tr("select_apk"), '', self.tr("select_apk_filter"))
         if file_path:
             self.run_cmd_thread(f'adb install "{file_path}"')
     
     def run_sideload(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, 'Select Firmware', '', 'Zip File (*.zip)')
+        file_path, _ = QFileDialog.getOpenFileName(self, self.tr("select_firmware"), '', self.tr("select_firmware_filter"))
         if file_path:
-            self.show_message_box('Sideload', 'Ensure phone is in ADB sideload mode.', QMessageBox.Information)
+            self.show_message_box(self.tr("sideload_title"), self.tr("sideload_msg"), QMessageBox.Information)
             self.run_cmd_thread(f'adb sideload "{file_path}"')
     
     def bypass_setup(self):
         cmd = 'adb shell settings put global setup_wizard_has_run 1 && adb shell settings put secure user_setup_complete 1 && adb shell settings put global device_provisioned 1'
-        self.log('Bypassing Setup...')
+        self.log(self.tr("bypass_log"))
         self.run_cmd_thread(cmd)
     
     def run_scrcpy(self):
         if self.scrcpy_path is None:
-            self.show_message_box('scrcpy Not Found', 
-                              'scrcpy.exe not found!\n\nPlace scrcpy folder/files in program directory.\n\n'
-                              'Download: https://github.com/Genymobile/scrcpy/releases', QMessageBox.Warning)
+            self.show_message_box(self.tr("scrcpy_not_found"),
+                              self.tr("scrcpy_not_found_msg"), QMessageBox.Warning)
             return
             
-        self.log(f'Starting scrcpy...')
+        self.log(self.tr("scrcpy_starting"))
         try:
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si = _make_startupinfo()
             cmd = f'"{self.scrcpy_path}"'
             subprocess.Popen(cmd, shell=True, startupinfo=si)
-            self.log('scrcpy started')
+            self.log(self.tr("scrcpy_started"))
         except Exception as e:
-            self.log(f'Error: {str(e)}')
+            self.log(f"Error: {str(e)}")
     
     def unlock_bootloader_fastboot(self):
-        reply = self.show_message_box("⚠ WARNING - Fastboot Unlock", 
-                                    "⚠ IMPORTANT NOTES:\n\n"
-                                    "• On XIAOMI devices, you NEED official permission from Xiaomi!\n"
-                                    "• On SAMSUNG devices, you need to enable OEM unlock in Developer Options!\n"
-                                    "• On NEW Android devices (2020+), this may NOT work!\n"
-                                    "• Some manufacturers require UNLOCK CODES!\n\n"
-                                    "⚠ THIS METHOD MAY NOT WORK ON XIAOMI AND OTHER NEW DEVICES!\n\n"
-                                    "Continue with fastboot unlock?", 
+        reply = self.show_message_box(self.tr("unlock_title"),
+                                    self.tr("unlock_msg"),
                                     QMessageBox.Warning, QMessageBox.Yes | QMessageBox.No)
         
         if reply == QMessageBox.Yes:
-            self.log("Starting bootloader unlock via fastboot...")
-            self.log("⚠ Warning: This may not work on Xiaomi and newer devices!")
+            self.log(self.tr("unlock_start"))
+            self.log(self.tr("unlock_warn"))
             
             commands = [
                 'fastboot oem unlock',
@@ -3600,63 +3739,54 @@ class ADBLiteApp(QMainWindow):
                 'fastboot oem unlock-go'
             ]
             
-            self.show_message_box("Instructions", 
-                                "Please follow these steps:\n\n"
-                                "1. Enable 'OEM Unlocking' in Developer Options\n"
-                                "2. Connect phone in FASTBOOT mode\n"
-                                "3. Use volume keys to confirm unlock on device\n\n"
-                                "⚠ ALL DATA WILL BE WIPED!\n\n"
-                                "The console will show the process...", 
+            self.show_message_box(self.tr("unlock_instructions_title"),
+                                self.tr("unlock_instructions_msg"),
                                 QMessageBox.Information)
             
             for cmd in commands:
-                self.log(f"Trying: {cmd}")
+                self.log(self.tr("unlock_trying").format(cmd=cmd))
                 self.run_cmd_thread(cmd)
                 
-            self.log("If unlock successful, phone will wipe data and reboot.")
-            self.log("If it fails, your device may require official unlock tools.")
+            self.log(self.tr("unlock_success_msg"))
+            self.log(self.tr("unlock_fail_msg"))
 
     def relock_bootloader_fastboot(self):
         """Relock bootloader (обратная операция к unlock)"""
         reply = self.show_message_box(
-            "⚠ WARNING - Relock Bootloader",
-            "⚠ IMPORTANT:\n\n"
-            "• Relocking will WIPE ALL DATA on the device!\n"
-            "• After relock you CANNOT flash custom ROMs/recoveries\n"
-            "• If your device had knox counter (Samsung) — it will be triggered forever\n"
-            "• Some devices may brick if you relock with non-stock firmware!\n\n"
-            "Continue with relock?",
+            self.tr("relock_title"),
+            self.tr("relock_msg"),
             QMessageBox.Warning, QMessageBox.Yes | QMessageBox.No
         )
 
         if reply == QMessageBox.Yes:
-            self.log("Starting bootloader relock...")
+            self.log(self.tr("relock_start"))
             commands = [
                 'fastboot flashing lock',
                 'fastboot oem lock',
                 'fastboot oem lock-go'
             ]
             for cmd in commands:
-                self.log(f"Trying: {cmd}")
+                self.log(self.tr("unlock_trying").format(cmd=cmd))
                 self.run_cmd_thread(cmd)
-            self.log("If relock successful, phone will wipe data and reboot.")
+            self.log(self.tr("relock_success_msg"))
 
     def switch_ab_slot(self):
         """Переключение активного A/B слота на противоположный"""
         if self.device_state not in ['FASTBOOT', 'FASTBOOTD']:
-            self.show_message_box("Wrong Mode", "Works only in FASTBOOT mode!", QMessageBox.Warning)
+            self.show_message_box(self.tr("wrong_mode"), self.tr("wrong_mode_fastboot"), QMessageBox.Warning)
             return
 
         # Сначала узнаём текущий слот
         try:
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si = _make_startupinfo()
             result = subprocess.run('fastboot getvar current-slot', shell=True,
                                     capture_output=True, startupinfo=si, text=True,
-                                    encoding='utf-8', errors='ignore', timeout=5)
+                                    encoding=ADB_ENCODING, errors='ignore', timeout=5)
             out = (result.stdout or "") + (result.stderr or "")
         except Exception as e:
-            self.show_message_box("Error", f"Cannot check current slot:\n{str(e)}", QMessageBox.Critical)
+            self.show_message_box(self.tr("error_title"),
+                                  self.tr("slot_check_error_msg").format(error=str(e)),
+                                  QMessageBox.Critical)
             return
 
         current = None
@@ -3666,37 +3796,32 @@ class ADBLiteApp(QMainWindow):
                 break
 
         if current not in ('a', 'b'):
-            self.show_message_box("A/B Not Supported",
-                                  "Could not detect current slot.\n"
-                                  "Your device may not be A/B (it's A-only).",
+            self.show_message_box(self.tr("slot_not_supported_title"),
+                                  self.tr("slot_not_supported_msg"),
                                   QMessageBox.Warning)
             return
 
         target = 'b' if current == 'a' else 'a'
         reply = QMessageBox.question(
-            self, "Confirm Slot Switch",
-            f"Current slot: {current.upper()}\n"
-            f"Will switch to: {target.upper()}\n\n"
-            "After switch device will reboot from the other slot.\n"
-            "Make sure the target slot is bootable!",
+            self, self.tr("slot_switch_title"),
+            self.tr("slot_switch_msg").format(current=current.upper(), target=target.upper()),
             QMessageBox.Yes | QMessageBox.No
         )
 
         if reply == QMessageBox.Yes:
             cmd = f'fastboot --set-active={target}'
-            self.log(f"Switching slot: {current.upper()} → {target.upper()}")
+            self.log(self.tr("slot_switching").format(current=current.upper(), target=target.upper()))
             self.run_cmd_thread(cmd)
 
     def check_unlock_ability(self):
         """Проверка возможности разблокировки (важно для Xiaomi и др.)"""
         if self.device_state not in ['FASTBOOT', 'FASTBOOTD']:
-            self.show_message_box("Wrong Mode", "Works only in FASTBOOT mode!", QMessageBox.Warning)
+            self.show_message_box(self.tr("wrong_mode"), self.tr("wrong_mode_fastboot"), QMessageBox.Warning)
             return
 
-        self.log("Checking unlock ability...")
+        self.log(self.tr("unlock_ability_check"))
         try:
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si = _make_startupinfo()
             commands = [
                 'fastboot oem device-info',
                 'fastboot flashing get_unlock_ability',
@@ -3711,12 +3836,8 @@ class ADBLiteApp(QMainWindow):
                 for line in out.split('\n'):
                     if line.strip():
                         self.log(line.strip())
-            self.show_message_box("Unlock Ability",
-                                  "Check console log for:\n\n"
-                                  "• Device unlocked: true/false\n"
-                                  "• Device critical unlocked: true/false\n"
-                                  "• get_unlock_ability: 1 (yes) / 0 (no)\n\n"
-                                  "If get_unlock_ability=0 — Xiaomi needs Mi Unlock tool + 168h wait.",
+            self.show_message_box(self.tr("unlock_ability_title"),
+                                  self.tr("unlock_ability_msg"),
                                   QMessageBox.Information)
         except Exception as e:
             self.log(f"Error: {str(e)}")
@@ -3724,21 +3845,20 @@ class ADBLiteApp(QMainWindow):
     def take_screenshot(self):
         """Делает скриншот экрана устройства и сохраняет на ПК"""
         if self.device_state != 'ADB':
-            self.show_message_box("Wrong Mode",
-                                  "Device must be in ADB mode for screenshot!",
+            self.show_message_box(self.tr("wrong_mode"),
+                                  self.tr("wrong_mode_adb_screenshot"),
                                   QMessageBox.Warning)
             return
 
         default_name = f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-        save_path, _ = QFileDialog.getSaveFileName(self, "Save Screenshot", default_name,
+        save_path, _ = QFileDialog.getSaveFileName(self, self.tr("screenshot_save_title"), default_name,
                                                     "PNG Image (*.png);;All Files (*.*)")
         if not save_path:
             return
 
-        self.log(f"Capturing screenshot to {os.path.basename(save_path)}...")
+        self.log(self.tr("screenshot_saving").format(name=os.path.basename(save_path)))
         try:
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si = _make_startupinfo()
             # На Windows `adb exec-out screencap -p` даёт CRLF-искажения.
             # Надёжнее: screencap в /sdcard, затем adb pull
             tmp_remote = '/sdcard/_screenshot_tmp.png'
@@ -3751,17 +3871,19 @@ class ADBLiteApp(QMainWindow):
                            startupinfo=si, timeout=5)
 
             if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
-                self.log(f"✓ Screenshot saved: {save_path}")
-                self.show_message_box("Saved",
-                                      f"Screenshot saved to:\n{save_path}",
+                self.log(self.tr("screenshot_saved").format(path=save_path))
+                self.show_message_box(self.tr("screenshot_saved_title"),
+                                      self.tr("screenshot_saved_msg").format(path=save_path),
                                       QMessageBox.Information)
             else:
-                self.show_message_box("Error", "Screenshot failed — file is empty or missing.",
+                self.show_message_box(self.tr("screenshot_failed_title"),
+                                      self.tr("screenshot_failed_msg"),
                                       QMessageBox.Critical)
         except subprocess.TimeoutExpired:
-            self.show_message_box("Timeout", "Screenshot timed out.", QMessageBox.Warning)
+            self.show_message_box(self.tr("screenshot_timeout_title"),
+                                  self.tr("screenshot_timeout_msg"), QMessageBox.Warning)
         except Exception as e:
-            self.show_message_box("Error", str(e), QMessageBox.Critical)
+            self.show_message_box(self.tr("screenshot_error_title"), str(e), QMessageBox.Critical)
 
     # =============================================================
     # Update system (бесплатный GitHub-based авто-апдейт)
@@ -3828,7 +3950,7 @@ class ADBLiteApp(QMainWindow):
 
     def open_package_manager(self):
         if self.device_state != 'ADB':
-            self.show_message_box("Error", "Device must be in ADB mode!\nConnect device and enable USB debugging.", QMessageBox.Warning)
+            self.show_message_box(self.tr("error_title"), self.tr("wrong_mode_adb"), QMessageBox.Warning)
             return
         
         self.package_manager = PackageManagerDialog(self)
@@ -3836,7 +3958,7 @@ class ADBLiteApp(QMainWindow):
     
     def open_logcat(self):
         if self.device_state != 'ADB':
-            self.show_message_box("Error", "Device must be in ADB mode!\nConnect device and enable USB debugging.", QMessageBox.Warning)
+            self.show_message_box(self.tr("error_title"), self.tr("wrong_mode_adb"), QMessageBox.Warning)
             return
         self.logcat_dialog = LogcatDialog(self)
         self.logcat_dialog.exec_()
@@ -3848,106 +3970,117 @@ class ADBLiteApp(QMainWindow):
     
     def open_explorer(self):
         if self.device_state != 'ADB':
-            self.show_message_box("Error", "Device must be in ADB mode!\nConnect device and enable USB debugging.", QMessageBox.Warning)
+            self.show_message_box(self.tr("error_title"), self.tr("wrong_mode_adb"), QMessageBox.Warning)
             return
         self.explorer_dialog = AdbExplorerDialog(self)
         self.explorer_dialog.exec_()
     
     def open_debloat(self):
         if self.device_state != 'ADB':
-            self.show_message_box("Error", "Device must be in ADB mode!\nConnect device and enable USB debugging.", QMessageBox.Warning)
+            self.show_message_box(self.tr("error_title"), self.tr("wrong_mode_adb"), QMessageBox.Warning)
             return
         self.debloat_dialog = DebloatDialog(self)
         self.debloat_dialog.exec_()
     
     def open_partition_manager(self):
         if self.device_state not in ['FASTBOOT', 'FASTBOOTD']:
-            self.show_message_box("Error", "Device must be in FASTBOOT or FASTBOOTD mode!", QMessageBox.Warning)
+            self.show_message_box(self.tr("error_title"), self.tr("wrong_mode_fastboot_or_fastbootd"), QMessageBox.Warning)
             return
         
         self.partition_manager = PartitionManagerDialog(self)
         self.partition_manager.exec_()
     
     def select_gsi_image(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, 'Select GSI Image', '', 'GSI Image (*.img);;All Files (*.*)')
+        file_path, _ = QFileDialog.getOpenFileName(self, self.tr("select_gsi_image"), '', 'GSI Image (*.img);;All Files (*.*)')
         if file_path:
             self.gsi_image_path = file_path
             self.gsi_label.setText(f"📁 {os.path.basename(file_path)}")
-            self.log(f'Selected: {os.path.basename(file_path)}')
-            self.show_message_box('GSI Selected', f'Image: {os.path.basename(file_path)}', QMessageBox.Information)
+            self.log(self.tr("gsi_selected_log").format(name=os.path.basename(file_path)))
+            self.show_message_box(self.tr("gsi_selected_title"),
+                                  self.tr("gsi_selected_msg").format(name=os.path.basename(file_path)),
+                                  QMessageBox.Information)
             self.check_device_status()
     
     def check_current_slot(self):
-        self.log('Checking slot...')
+        self.log(self.tr("slot_checking"))
     
         try:
+            si = _make_startupinfo()
             result = subprocess.run('fastboot getvar current-slot', 
                               shell=True, 
                               capture_output=True,
+                              startupinfo=si,
                               text=True,
-                              encoding='utf-8',
+                              encoding=ADB_ENCODING,
+                              errors='ignore',
                               timeout=5)
         
             output = result.stdout.strip()
-            self.log(f"Output: {output}")
+            self.log(self.tr("slot_output").format(output=output))
         
             if 'current-slot:' in output:
                 slot = output.split('current-slot:')[-1].strip()
-                self.slot_info_label.setText(f"Current slot: {slot}")
-                self.log(f"Current active slot: {slot}")
+                self.slot_info_label.setText(self.tr("slot_result").format(slot=slot))
+                self.log(self.tr("slot_current").format(slot=slot))
             else:
-                self.slot_info_label.setText("Slot: A/B device")
+                self.slot_info_label.setText(self.tr("slot_ab_device"))
             
         except Exception as e:
                 self.log(f"Error: {str(e)}")
-                self.slot_info_label.setText("Error checking slot")
+                self.slot_info_label.setText(self.tr("slot_error"))
     
     def complete_wipe_data(self):
-        reply = self.show_message_box('Wipe Data', '⚠ ALL DATA WILL BE LOST!\n\nContinue?', QMessageBox.Question, QMessageBox.Yes | QMessageBox.No)
+        reply = self.show_message_box(self.tr("wipe_title"), self.tr("wipe_msg"), QMessageBox.Question, QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.Yes:
-            self.log('Starting wipe...')
+            self.log(self.tr("wipe_start"))
             commands = ['fastboot erase userdata', 'fastboot erase cache', 'fastboot reboot recovery']
             cmd_string = ' && '.join(commands)
             self.run_with_thread(cmd_string, 'Data Wipe')
     
     def install_gsi(self, ab_device=True):
         if not self.gsi_image_path:
-            self.show_message_box('No GSI', 'Select GSI image first!', QMessageBox.Warning)
+            self.show_message_box(self.tr("gsi_no_gsi_title"), self.tr("gsi_no_gsi_msg"), QMessageBox.Warning)
             return
         if not os.path.exists(self.gsi_image_path):
-            self.show_message_box('Not Found', 'GSI image file not found!', QMessageBox.Warning)
+            self.show_message_box(self.tr("gsi_not_found_title"), self.tr("gsi_not_found_msg"), QMessageBox.Warning)
             return
             
         device_type = "A/B" if ab_device else "A-Only"
-        reply = self.show_message_box('Install GSI', f'Device: {device_type}\nImage: {os.path.basename(self.gsi_image_path)}\n\n⚠ ALL DATA WILL BE LOST!\n\nContinue?', QMessageBox.Question, QMessageBox.Yes | QMessageBox.No)
+        reply = self.show_message_box(self.tr("gsi_install_title"),
+                                      self.tr("gsi_install_msg").format(
+                                          device_type=device_type,
+                                          image=os.path.basename(self.gsi_image_path)
+                                      ),
+                                      QMessageBox.Question, QMessageBox.Yes | QMessageBox.No)
         
         if reply == QMessageBox.Yes:
-            self.log(f'Installing GSI on {device_type}...')
+            self.log(self.tr("gsi_installing").format(device_type=device_type))
             if ab_device:
                 commands = ['fastboot erase system', f'fastboot flash system "{self.gsi_image_path}"', 'fastboot --set-active=a', 'fastboot reboot recovery']
             else:
                 commands = ['fastboot erase system', f'fastboot flash system "{self.gsi_image_path}"', 'fastboot reboot recovery']
             cmd_string = ' && '.join(commands)
             self.run_with_thread(cmd_string, f'GSI Install {device_type}')
-            QTimer.singleShot(2000, lambda: self.show_message_box('Important', 'After reboot to recovery:\n\n1. Select "Wipe data/factory reset"\n2. Confirm wipe\n3. Reboot system\n\nRequired for proper GSI boot!', QMessageBox.Information))
+            QTimer.singleShot(2000, lambda: self.show_message_box(self.tr("gsi_important_title"),
+                                                                  self.tr("gsi_important_msg"),
+                                                                  QMessageBox.Information))
     
     def get_device_info(self):
         if self.device_state != 'ADB':
-            self.show_message_box("Error", "Device must be in ADB mode!\nConnect device and enable USB debugging.", QMessageBox.Warning)
+            self.show_message_box(self.tr("error_title"), self.tr("wrong_mode_adb"), QMessageBox.Warning)
             return
         
         self.log("=" * 50)
-        self.log("Getting device information...")
+        self.log(self.tr("device_info_start"))
         self.log("=" * 50)
         
         info_text = ""
         
         def run_adb_command(cmd):
             try:
-                si = subprocess.STARTUPINFO()
-                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                si = _make_startupinfo()
                 result = subprocess.run(cmd, shell=True, capture_output=True, startupinfo=si, 
-                                      text=True, encoding='cp866', errors='ignore', timeout=5)
+                                      text=True, encoding=ADB_ENCODING, errors='ignore', timeout=5)
                 return result.stdout.strip()
             except:
                 return "N/A"
@@ -3964,23 +4097,21 @@ class ADBLiteApp(QMainWindow):
             if level_match:
                 battery_level = f"{level_match.group(1)}%"
         
-        info_text = f"""=== DEVICE INFORMATION ===
-
-📱 Device: {manufacturer} {model}
-📀 Android: {android_version} (SDK {android_sdk})
-🔋 Battery: {battery_level}
-
-Full information in console log below."""
+        info_text = self.tr("device_info_header") + "\n\n" + \
+            self.tr("device_info_device").format(manufacturer=manufacturer or 'N/A', model=model or 'N/A') + "\n" + \
+            self.tr("device_info_android").format(version=android_version or 'N/A', sdk=android_sdk or 'N/A') + "\n" + \
+            self.tr("device_info_battery").format(level=battery_level) + "\n\n" + \
+            self.tr("device_info_full_below")
         
         self.info_display.setText(info_text)
         
         product_name = run_adb_command('adb shell getprop ro.product.name')
         device_code = run_adb_command('adb shell getprop ro.product.device')
         
-        self.log(f"Manufacturer: {manufacturer if manufacturer else 'N/A'}")
-        self.log(f"Model: {model if model else 'N/A'}")
-        self.log(f"Product name: {product_name if product_name else 'N/A'}")
-        self.log(f"Device code: {device_code if device_code else 'N/A'}")
+        self.log(self.tr("device_info_manufacturer").format(value=manufacturer or 'N/A'))
+        self.log(self.tr("device_info_model").format(value=model or 'N/A'))
+        self.log(self.tr("device_info_product").format(value=product_name or 'N/A'))
+        self.log(self.tr("device_info_device_code").format(value=device_code or 'N/A'))
         
         mem_total = run_adb_command('adb shell cat /proc/meminfo 2>/dev/null | grep MemTotal')
         if mem_total != "N/A" and mem_total:
@@ -3988,18 +4119,18 @@ Full information in console log below."""
             if total_match:
                 total_kb = int(total_match.group(1))
                 total_ram = f"{total_kb // 1024} MB ({total_kb / (1024*1024):.2f} GB)"
-                self.log(f"RAM Total: {total_ram}")
+                self.log(self.tr("device_info_ram").format(value=total_ram))
         
         kernel_version = run_adb_command('adb shell uname -a 2>/dev/null')
         if kernel_version and kernel_version != "N/A":
             kernel_short = kernel_version[:80] + "..." if len(kernel_version) > 80 else kernel_version
-            self.log(f"Kernel: {kernel_short}")
+            self.log(self.tr("device_info_kernel").format(value=kernel_short))
         
         self.log("=" * 50)
-        self.log("✓ Device information collected successfully!")
+        self.log(self.tr("device_info_success"))
         self.log("=" * 50)
         
-        self.show_message_box("Device Information", info_text, QMessageBox.Information)
+        self.show_message_box(self.tr("device_info_title"), info_text, QMessageBox.Information)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
