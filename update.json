@@ -2,6 +2,6 @@
   "version": "5.1.0",
   "date": "2026-07-24",
   "size_kb": 181,
-  "download_url": "https://github.com/kilib1k/Adb_n_Fastboot/releases/download/Release/AdbFastboot.py",
-  "changelog": "v5.0 — What's new\n\n- Removed unnecessary code \n- Added colors to Logcat \n- Added Linux support\n\nThanks for using Community Edition!"
+  "download_url": "https://github.com/kilib1k/Adb_n_Fastboot/releases/download/Release_5.1.0/AdbFastboot.py",
+  "changelog": "v5.0 — What's new\n\n- Removed unnecessary code \n- Added colors to Logcat \n- Added Linux support\n\nThanks for using Community Edition!\n\nAnd please download the new Localization.json file\n\nhttps://github.com/kilib1k/Adb_n_Fastboot/releases/tag/Release_5.1.0"
 }
