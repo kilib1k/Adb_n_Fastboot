@@ -132,7 +132,7 @@ The app checks `https://raw.githubusercontent.com/kilib1k/Adb_n_Fastboot/main/up
 ### v5.1 (2026-07-24) — Community Edition
 - ➕ **Added colors to Logcat**
 - ➕ **Added Linux support**
-- ➕ **Removed unnecessary code**
+- ➖ **Removed unnecessary code**
 
 ### v5.0 (2026-07-24) — Community Edition
 - ➕ **Logcat viewer** with live filters, batching, save-to-file.
