@@ -1,6 +1,6 @@
 # ADB & Fastboot — Community Edition
 
-![Version](https://img.shields.io/badge/version-v5.0.0-blue)
+![Version](https://img.shields.io/badge/version-v5.1.0-blue)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![PyQt5](https://img.shields.io/badge/GUI-PyQt5-green)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
@@ -128,6 +128,11 @@ The app checks `https://raw.githubusercontent.com/kilib1k/Adb_n_Fastboot/main/up
 ---
 
 ## 📜 Changelog
+
+### v5.1 (2026-07-24) — Community Edition
+- ➕ **Added colors to Logcat**
+- ➕ **Added Linux support**
+- ➕ **Removed unnecessary code**
 
 ### v5.0 (2026-07-24) — Community Edition
 - ➕ **Logcat viewer** with live filters, batching, save-to-file.
