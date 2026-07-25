@@ -1,0 +1,278 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "description": "Theme definitions for ADB & Fastboot Community Edition",
+    "authors": ["@kilib1k", "@LineXin1"],
+    "schema": {
+      "main_bg":          "Main window background color",
+      "button_bg":        "Normal button background",
+      "button_text":      "Normal button text color",
+      "button_hover_bg":  "Button background on hover",
+      "button_hover_text":"Button text color on hover",
+      "console_bg":       "Console output background",
+      "console_text":     "Console output text color",
+      "label_text":       "Standard label text color",
+      "group_border":     "QGroupBox border color",
+      "group_text":       "QGroupBox title color",
+      "status_online":    "Status indicator color when device is online",
+      "status_offline":   "Status indicator color when device is offline",
+      "progress_bg":      "Progress bar fill color"
+    }
+  },
+
+  "Gray (Default)": {
+    "main_bg": "#1a1a1a",
+    "button_bg": "#3a3a3a",
+    "button_text": "#cccccc",
+    "button_hover_bg": "#cccccc",
+    "button_hover_text": "#111111",
+    "console_bg": "#141414",
+    "console_text": "#cccccc",
+    "label_text": "#cccccc",
+    "group_border": "#cccccc",
+    "group_text": "#cccccc",
+    "status_online": "#51cf66",
+    "status_offline": "#aaaaaa",
+    "progress_bg": "#cccccc"
+  },
+
+  "Dark": {
+    "main_bg": "#121212",
+    "button_bg": "#1e1e1e",
+    "button_text": "#00d8d6",
+    "button_hover_bg": "#00d8d6",
+    "button_hover_text": "#000000",
+    "console_bg": "#000000",
+    "console_text": "#05c46b",
+    "label_text": "#ffffff",
+    "group_border": "#555555",
+    "group_text": "#00d8d6",
+    "status_online": "#05c46b",
+    "status_offline": "#ff3f34",
+    "progress_bg": "#00d8d6"
+  },
+
+  "Light": {
+    "main_bg": "#f5f5f5",
+    "button_bg": "#ffffff",
+    "button_text": "#2196F3",
+    "button_hover_bg": "#2196F3",
+    "button_hover_text": "#ffffff",
+    "console_bg": "#ffffff",
+    "console_text": "#000000",
+    "label_text": "#000000",
+    "group_border": "#cccccc",
+    "group_text": "#2196F3",
+    "status_online": "#4CAF50",
+    "status_offline": "#f44336",
+    "progress_bg": "#2196F3"
+  },
+
+  "Green": {
+    "main_bg": "#0a2e0a",
+    "button_bg": "#0d470d",
+    "button_text": "#00ff00",
+    "button_hover_bg": "#00ff00",
+    "button_hover_text": "#000000",
+    "console_bg": "#051a05",
+    "console_text": "#00ff00",
+    "label_text": "#00ff00",
+    "group_border": "#00ff00",
+    "group_text": "#00ff00",
+    "status_online": "#00ff00",
+    "status_offline": "#ff4444",
+    "progress_bg": "#00ff00"
+  },
+
+  "Blue": {
+    "main_bg": "#0a1a3a",
+    "button_bg": "#0d2860",
+    "button_text": "#4da8ff",
+    "button_hover_bg": "#4da8ff",
+    "button_hover_text": "#000000",
+    "console_bg": "#051530",
+    "console_text": "#4da8ff",
+    "label_text": "#4da8ff",
+    "group_border": "#4da8ff",
+    "group_text": "#4da8ff",
+    "status_online": "#4da8ff",
+    "status_offline": "#ff6b6b",
+    "progress_bg": "#4da8ff"
+  },
+
+  "Purple": {
+    "main_bg": "#1a0a2e",
+    "button_bg": "#2d0d47",
+    "button_text": "#b85cff",
+    "button_hover_bg": "#b85cff",
+    "button_hover_text": "#000000",
+    "console_bg": "#150530",
+    "console_text": "#b85cff",
+    "label_text": "#b85cff",
+    "group_border": "#b85cff",
+    "group_text": "#b85cff",
+    "status_online": "#b85cff",
+    "status_offline": "#ff6b6b",
+    "progress_bg": "#b85cff"
+  },
+
+  "Orange": {
+    "main_bg": "#2a1508",
+    "button_bg": "#7a3a10",
+    "button_text": "#ffa94d",
+    "button_hover_bg": "#ffa94d",
+    "button_hover_text": "#1a0c00",
+    "console_bg": "#1f0f05",
+    "console_text": "#ffa94d",
+    "label_text": "#ffa94d",
+    "group_border": "#ffa94d",
+    "group_text": "#ffa94d",
+    "status_online": "#51cf66",
+    "status_offline": "#ffa94d",
+    "progress_bg": "#ffa94d"
+  },
+
+  "Cyan": {
+    "main_bg": "#0a1e24",
+    "button_bg": "#10424f",
+    "button_text": "#5de4f0",
+    "button_hover_bg": "#5de4f0",
+    "button_hover_text": "#031016",
+    "console_bg": "#06161c",
+    "console_text": "#5de4f0",
+    "label_text": "#5de4f0",
+    "group_border": "#5de4f0",
+    "group_text": "#5de4f0",
+    "status_online": "#51cf66",
+    "status_offline": "#5de4f0",
+    "progress_bg": "#5de4f0"
+  },
+
+  "Rose": {
+    "main_bg": "#2a0a1e",
+    "button_bg": "#4a0d33",
+    "button_text": "#ff7eb6",
+    "button_hover_bg": "#ff7eb6",
+    "button_hover_text": "#1a0010",
+    "console_bg": "#1f0515",
+    "console_text": "#ffb3d1",
+    "label_text": "#ff7eb6",
+    "group_border": "#ff7eb6",
+    "group_text": "#ff7eb6",
+    "status_online": "#51cf66",
+    "status_offline": "#ff6b6b",
+    "progress_bg": "#ff7eb6"
+  },
+
+  "Midnight": {
+    "main_bg": "#050814",
+    "button_bg": "#0d1226",
+    "button_text": "#7c8cff",
+    "button_hover_bg": "#7c8cff",
+    "button_hover_text": "#020410",
+    "console_bg": "#020410",
+    "console_text": "#a5b4ff",
+    "label_text": "#c5cdf5",
+    "group_border": "#2a3563",
+    "group_text": "#7c8cff",
+    "status_online": "#51cf66",
+    "status_offline": "#ff5c7a",
+    "progress_bg": "#7c8cff"
+  },
+
+  "Nord": {
+    "main_bg": "#2e3440",
+    "button_bg": "#3b4252",
+    "button_text": "#88c0d0",
+    "button_hover_bg": "#88c0d0",
+    "button_hover_text": "#2e3440",
+    "console_bg": "#242933",
+    "console_text": "#d8dee9",
+    "label_text": "#e5e9f0",
+    "group_border": "#4c566a",
+    "group_text": "#88c0d0",
+    "status_online": "#a3be8c",
+    "status_offline": "#bf616a",
+    "progress_bg": "#88c0d0"
+  },
+
+  "Dracula": {
+    "main_bg": "#282a36",
+    "button_bg": "#383a4a",
+    "button_text": "#bd93f9",
+    "button_hover_bg": "#bd93f9",
+    "button_hover_text": "#1a1b22",
+    "console_bg": "#21222c",
+    "console_text": "#f8f8f2",
+    "label_text": "#f8f8f2",
+    "group_border": "#6272a4",
+    "group_text": "#bd93f9",
+    "status_online": "#50fa7b",
+    "status_offline": "#ff5555",
+    "progress_bg": "#bd93f9"
+  },
+
+  "Solarized": {
+    "main_bg": "#002b36",
+    "button_bg": "#073642",
+    "button_text": "#2aa198",
+    "button_hover_bg": "#2aa198",
+    "button_hover_text": "#002b36",
+    "console_bg": "#00343f",
+    "console_text": "#93a1a1",
+    "label_text": "#eee8d5",
+    "group_border": "#586e75",
+    "group_text": "#2aa198",
+    "status_online": "#859900",
+    "status_offline": "#dc322f",
+    "progress_bg": "#2aa198"
+  },
+
+  "Cyberpunk": {
+    "main_bg": "#0a0014",
+    "button_bg": "#1a0033",
+    "button_text": "#ff2bd6",
+    "button_hover_bg": "#ff2bd6",
+    "button_hover_text": "#00f0ff",
+    "console_bg": "#050010",
+    "console_text": "#00f0ff",
+    "label_text": "#ff2bd6",
+    "group_border": "#ff2bd6",
+    "group_text": "#00f0ff",
+    "status_online": "#39ff14",
+    "status_offline": "#ff2bd6",
+    "progress_bg": "#ff2bd6"
+  },
+
+  "Tokyo Night": {
+    "main_bg": "#1a1b26",
+    "button_bg": "#24283b",
+    "button_text": "#7aa2f7",
+    "button_hover_bg": "#7aa2f7",
+    "button_hover_text": "#1a1b26",
+    "console_bg": "#16161e",
+    "console_text": "#c0caf5",
+    "label_text": "#c0caf5",
+    "group_border": "#414868",
+    "group_text": "#7aa2f7",
+    "status_online": "#9ece6a",
+    "status_offline": "#f7768e",
+    "progress_bg": "#7aa2f7"
+  },
+
+  "Monokai": {
+    "main_bg": "#272822",
+    "button_bg": "#3e3d32",
+    "button_text": "#a6e22e",
+    "button_hover_bg": "#a6e22e",
+    "button_hover_text": "#272822",
+    "console_bg": "#1e1f1c",
+    "console_text": "#f8f8f2",
+    "label_text": "#f8f8f2",
+    "group_border": "#75715e",
+    "group_text": "#66d9ef",
+    "status_online": "#a6e22e",
+    "status_offline": "#f92672",
+    "progress_bg": "#a6e22e"
+  }
+}

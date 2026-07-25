@@ -12,6 +12,7 @@ import shutil
 import platform
 import urllib.request
 import urllib.error
+import webbrowser
 from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout, 
                             QHBoxLayout, QWidget, QTextEdit, QLabel, QFileDialog, 
@@ -140,6 +141,113 @@ class LogcatHighlighter(QSyntaxHighlighter):
                 return
 
 
+
+class ConsoleHighlighter(QSyntaxHighlighter):
+    """Подсветка строк главного лога приложения по ключевым словам.
+
+    Применяет цвет ко всей строке целиком:
+      • error/failed/denied/cannot/failed to/no such/not found → красный
+      • waiting/loading/downloading/flashing/erasing/sending → жёлтый
+      • success/ok/done/finished/complete/passed/successful → зелёный
+
+    Регистронезависимо. Использует QSyntaxHighlighter (ленивая подсветка
+    при отрисовке) — дёшево даже для длинных логов."""
+
+    ERROR_WORDS = [
+        "error", "failed", "denied", "cannot", "no such", "not found",
+        "failure", "fatal", "aborted", "rejected", "permission denied",
+        "device unauthorized", "device offline", "command not found",
+        "not recognized", "invalid", "refused",
+    ]
+    WARN_WORDS = [
+        "waiting", "loading", "downloading", "flashing", "erasing",
+        "sending", "writing", "booting", "connecting", "rebooting",
+    ]
+    OK_WORDS = [
+        "success", "successful", "succeeded", "ok", "done", "finished",
+        "complete", "completed", "passed", "ready", "installed", "fastboot",
+    ]
+
+    def __init__(self, document):
+        super().__init__(document)
+        self.error_fmt = QTextCharFormat()
+        self.error_fmt.setForeground(QColor(244, 90, 105))   # красный
+        self.warn_fmt = QTextCharFormat()
+        self.warn_fmt.setForeground(QColor(230, 192, 80))    # жёлтый
+        self.ok_fmt = QTextCharFormat()
+        self.ok_fmt.setForeground(QColor(102, 217, 138))     # зелёный
+
+    def highlightBlock(self, text):
+        if not text:
+            return
+        lower = text.lower()
+        # Порядок проверки важен: error > warn > ok (если в строке есть и
+        # "ok" и "error" — это скорее всего ошибка).
+        for w in self.ERROR_WORDS:
+            if w in lower:
+                self.setFormat(0, len(text), self.error_fmt)
+                return
+        for w in self.WARN_WORDS:
+            if w in lower:
+                self.setFormat(0, len(text), self.warn_fmt)
+                return
+        for w in self.OK_WORDS:
+            if w in lower:
+                self.setFormat(0, len(text), self.ok_fmt)
+                return
+
+
+def _get_app_base_dir():
+    """Возвращает директорию, где лежит запущенный .py (или .exe для
+    frozen-сборок). Именно сюда нужно складывать обновлённые файлы
+    (AdbFastboot.py, localization.json, themes.json)."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    # Если запущено как скрипт — берём директорию __file__
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _download_file(url, dest_path, timeout=60):
+    """Скачивает файл с URL в dest_path. Бросает исключение при ошибке.
+
+    Сначала пишем во временный файл dest_path + '.part', затем атомарно
+    переименовываем — чтобы при обрыве связи не осталось полу-скачанного
+    файла под целевым именем."""
+    req = urllib.request.Request(url, headers={
+        'User-Agent': f'AdbFastboot/{CURRENT_VERSION}'
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        content = resp.read()
+    part_path = dest_path + '.part'
+    with open(part_path, 'wb') as f:
+        f.write(content)
+    # Если целевой файл уже существует — он будет перезаписан rename
+    if os.path.exists(dest_path):
+        try:
+            os.remove(dest_path)
+        except Exception:
+            pass  # на Windows иногда нельзя удалить занятый файл
+    os.rename(part_path, dest_path)
+    return len(content)
+
+
+def _backup_file(path):
+    """Сохраняет копию файла как <path>.bak. Старый .bak перетирается.
+    Молча игнорирует ошибки — это best-effort резервная копия."""
+    if not os.path.isfile(path):
+        return
+    bak = path + '.bak'
+    try:
+        if os.path.exists(bak):
+            os.remove(bak)
+    except Exception:
+        pass
+    try:
+        os.rename(path, bak)
+    except Exception:
+        pass  # на Windows нельзя двигать запущенный .py
+
+
 class UpdateDialog(QDialog):
     """Диалог 'Доступно обновление' — показывает changelog и предлагает скачать."""
     def __init__(self, manifest, parent=None):
@@ -190,6 +298,44 @@ class UpdateDialog(QDialog):
             info_label.setStyleSheet("color: #888; padding: 3px;")
             layout.addWidget(info_label)
 
+        # Список файлов обновления с чекбоксами.
+        # Манифест может содержать либо "files": [{"name","url"}, ...],
+        # либо legacy-форму с одним "download_url" — тогда показываем один
+        # файл "AdbFastboot.py".
+        self.file_items = []   # список (filename, url) для каждого item
+        self.files_list = QListWidget()
+        self.files_list.setObjectName("update_files_list")
+        files = self.manifest.get('files')
+        if not files:
+            # Legacy-манифест: только .py
+            files = [{"name": "AdbFastboot.py",
+                      "url": self.manifest.get('download_url', '')}]
+        for f in files:
+            name = f.get('name', '?')
+            url = f.get('url', '')
+            item = QListWidgetItem(name)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
+            # Сохраним URL в data-роль, чтобы вытащить при скачивании
+            item.setData(Qt.UserRole, url)
+            self.files_list.addItem(item)
+            self.file_items.append((name, url))
+        files_label = QLabel(self.tr("update_files_label"))
+        files_label.setStyleSheet("font-weight: bold; padding-top: 5px;")
+        layout.addWidget(files_label)
+        layout.addWidget(self.files_list)
+
+        # Кнопки "select all" / "unselect all"
+        sel_row = QHBoxLayout()
+        self.btn_select_all = QPushButton(self.tr("update_select_all"))
+        self.btn_select_all.clicked.connect(lambda: self._set_all_checkboxes(Qt.Checked))
+        sel_row.addWidget(self.btn_select_all)
+        self.btn_unselect_all = QPushButton(self.tr("update_unselect_all"))
+        self.btn_unselect_all.clicked.connect(lambda: self._set_all_checkboxes(Qt.Unchecked))
+        sel_row.addWidget(self.btn_unselect_all)
+        sel_row.addStretch()
+        layout.addLayout(sel_row)
+
         # Кнопки
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
@@ -204,6 +350,11 @@ class UpdateDialog(QDialog):
         btn_layout.addWidget(self.btn_download)
 
         layout.addLayout(btn_layout)
+
+    def _set_all_checkboxes(self, state):
+        """Устанавливает состояние всех чекбоксов в списке файлов."""
+        for i in range(self.files_list.count()):
+            self.files_list.item(i).setCheckState(state)
 
     def apply_theme(self):
         if not self.parent:
@@ -234,56 +385,84 @@ class UpdateDialog(QDialog):
         """)
 
     def download_update(self):
-        """Скачивает новый .py поверх старого, старый переименовывает в .bak."""
-        url = self.manifest.get('download_url')
-        if not url:
-            QMessageBox.critical(self, self.tr("error_title"),
-                                 self.tr("update_no_download_url"))
+        """Скачивает выбранные файлы из манифеста.
+
+        Для каждого файла:
+          1. Создаём backup старой версии как <name>.bak
+          2. Скачиваем новый в <name>.part через _download_file
+          3. Атомарно переименовываем .part → <name>
+        Если хотя бы один файл упал — показываем ошибку и прерываем
+        (уже скачанные файлы остаются на месте, при следующей попытке
+        они перекачаются)."""
+        # Соберём список выбранных файлов: [(name, url), ...]
+        selected = []
+        for i in range(self.files_list.count()):
+            item = self.files_list.item(i)
+            if item.checkState() == Qt.Checked:
+                name = item.text()
+                url = item.data(Qt.UserRole) or ""
+                if not url:
+                    QMessageBox.critical(self, self.tr("error_title"),
+                                         self.tr("update_no_download_url"))
+                    return
+                selected.append((name, url))
+
+        if not selected:
+            QMessageBox.warning(self, self.tr("error_title"),
+                                self.tr("update_no_files_selected"))
             return
+
+        base_dir = _get_app_base_dir()
+        # Блокируем UI на время скачивания
+        self.btn_download.setEnabled(False)
+        self.btn_skip.setEnabled(False)
+        self.btn_download.setText(self.tr("update_downloading"))
+        self.files_list.setEnabled(False)
+        self.btn_select_all.setEnabled(False)
+        self.btn_unselect_all.setEnabled(False)
+        # Запомним, какие файлы уже скачали успешно — для отчёта
+        downloaded = []
         try:
-            # Блокируем кнопку чтобы не нажали дважды
-            self.btn_download.setEnabled(False)
-            self.btn_download.setText(self.tr("update_downloading"))
-
-            req = urllib.request.Request(url, headers={
-                'User-Agent': f'AdbFastboot/{CURRENT_VERSION}'
-            })
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                content = resp.read()
-
-            # Путь к запущенному .py (важно: не sys.argv[0] если запущено через pythonw)
-            current_path = os.path.abspath(sys.argv[0])
-            if not os.path.isfile(current_path):
-                # fallback на __file__
-                current_path = os.path.abspath(__file__)
-
-            backup_path = current_path + '.bak'
-            temp_path = current_path + '.new'
-
-            # Пишем в temp
-            with open(temp_path, 'wb') as f:
-                f.write(content)
-
-            # Backup старого + замена
-            if os.path.exists(backup_path):
-                try:
-                    os.remove(backup_path)
-                except Exception:
-                    pass
-            try:
-                os.rename(current_path, backup_path)
-            except Exception:
-                pass  # на Windows иногда нельзя двигать запущенный файл
-            os.rename(temp_path, current_path)
-
-            QMessageBox.information(self, self.tr("update_done_title"),
-                                    self.tr("update_done_text"))
+            for name, url in selected:
+                self.btn_download.setText(
+                    self.tr("update_downloading_file").format(name=name)
+                )
+                dest = os.path.join(base_dir, name)
+                # Backup старого (best-effort)
+                _backup_file(dest)
+                # Скачиваем
+                size = _download_file(url, dest, timeout=120)
+                downloaded.append((name, size))
+            # Все файлы скачаны успешно
+            self.btn_download.setText(self.tr("update_btn_download"))
+            files_summary = "\n".join(
+                self.tr("update_file_done_line").format(name=n, size=s)
+                for n, s in downloaded
+            )
+            QMessageBox.information(
+                self, self.tr("update_done_title"),
+                self.tr("update_done_text_multi").format(
+                    count=len(downloaded),
+                    files=files_summary
+                )
+            )
             self.accept()
         except Exception as e:
             self.btn_download.setEnabled(True)
+            self.btn_skip.setEnabled(True)
+            self.files_list.setEnabled(True)
+            self.btn_select_all.setEnabled(True)
+            self.btn_unselect_all.setEnabled(True)
             self.btn_download.setText(self.tr("update_btn_download"))
-            QMessageBox.critical(self, self.tr("error_title"),
-                                 self.tr("update_download_failed").format(err=str(e)))
+            # Если часть файлов уже скачали — упомянем это в сообщении
+            extra = ""
+            if downloaded:
+                done_names = ", ".join(n for n, _ in downloaded)
+                extra = self.tr("update_partial_done").format(names=done_names)
+            QMessageBox.critical(
+                self, self.tr("error_title"),
+                self.tr("update_download_failed").format(err=str(e)) + extra
+            )
 
 
 class InstallThread(QThread):
@@ -2582,132 +2761,47 @@ class ADBLiteApp(QMainWindow):
         
         self.device_state = 'Offline'
         
-        self.themes = {
-            "Gray (Default)": {
-                "main_bg": "#1a1a1a",
-                "button_bg": "#3a3a3a",
-                "button_text": "#cccccc",
-                "button_hover_bg": "#cccccc",
-                "button_hover_text": "#111111",
-                "console_bg": "#141414",
-                "console_text": "#cccccc",
-                "label_text": "#cccccc",
-                "group_border": "#cccccc",
-                "group_text": "#cccccc",
-                "status_online": "#51cf66",
-                "status_offline": "#aaaaaa",
-                "progress_bg": "#cccccc"
-            },
-            "Dark": {
-                "main_bg": "#121212",
-                "button_bg": "#1e1e1e",
-                "button_text": "#00d8d6",
-                "button_hover_bg": "#00d8d6",
-                "button_hover_text": "#000000",
-                "console_bg": "#000000",
-                "console_text": "#05c46b",
-                "label_text": "#ffffff",
-                "group_border": "#555555",
-                "group_text": "#00d8d6",
-                "status_online": "#05c46b",
-                "status_offline": "#ff3f34",
-                "progress_bg": "#00d8d6"
-            },
-            "Light": {
-                "main_bg": "#f5f5f5",
-                "button_bg": "#ffffff",
-                "button_text": "#2196F3",
-                "button_hover_bg": "#2196F3",
-                "button_hover_text": "#ffffff",
-                "console_bg": "#ffffff",
-                "console_text": "#000000",
-                "label_text": "#000000",
-                "group_border": "#cccccc",
-                "group_text": "#2196F3",
-                "status_online": "#4CAF50",
-                "status_offline": "#f44336",
-                "progress_bg": "#2196F3"
-            },
-            "Green": {
-                "main_bg": "#0a2e0a",
-                "button_bg": "#0d470d",
-                "button_text": "#00ff00",
-                "button_hover_bg": "#00ff00",
-                "button_hover_text": "#000000",
-                "console_bg": "#051a05",
-                "console_text": "#00ff00",
-                "label_text": "#00ff00",
-                "group_border": "#00ff00",
-                "group_text": "#00ff00",
-                "status_online": "#00ff00",
-                "status_offline": "#ff4444",
-                "progress_bg": "#00ff00"
-            },
-            "Blue": {
-                "main_bg": "#0a1a3a",
-                "button_bg": "#0d2860",
-                "button_text": "#4da8ff",
-                "button_hover_bg": "#4da8ff",
-                "button_hover_text": "#000000",
-                "console_bg": "#051530",
-                "console_text": "#4da8ff",
-                "label_text": "#4da8ff",
-                "group_border": "#4da8ff",
-                "group_text": "#4da8ff",
-                "status_online": "#4da8ff",
-                "status_offline": "#ff6b6b",
-                "progress_bg": "#4da8ff"
-            },
-            "Purple": {
-                "main_bg": "#1a0a2e",
-                "button_bg": "#2d0d47",
-                "button_text": "#b85cff",
-                "button_hover_bg": "#b85cff",
-                "button_hover_text": "#000000",
-                "console_bg": "#150530",
-                "console_text": "#b85cff",
-                "label_text": "#b85cff",
-                "group_border": "#b85cff",
-                "group_text": "#b85cff",
-                "status_online": "#b85cff",
-                "status_offline": "#ff6b6b",
-                "progress_bg": "#b85cff"
-            },
-            "Orange": {
-                "main_bg": "#2a1508",
-                "button_bg": "#7a3a10",
-                "button_text": "#ffa94d",
-                "button_hover_bg": "#ffa94d",
-                "button_hover_text": "#1a0c00",
-                "console_bg": "#1f0f05",
-                "console_text": "#ffa94d",
-                "label_text": "#ffa94d",
-                "group_border": "#ffa94d",
-                "group_text": "#ffa94d",
-                "status_online": "#51cf66",
-                "status_offline": "#ffa94d",
-                "progress_bg": "#ffa94d"
-            },
-            "Cyan": {
-                "main_bg": "#0a1e24",
-                "button_bg": "#10424f",
-                "button_text": "#5de4f0",
-                "button_hover_bg": "#5de4f0",
-                "button_hover_text": "#031016",
-                "console_bg": "#06161c",
-                "console_text": "#5de4f0",
-                "label_text": "#5de4f0",
-                "group_border": "#5de4f0",
-                "group_text": "#5de4f0",
-                "status_online": "#51cf66",
-                "status_offline": "#5de4f0",
-                "progress_bg": "#5de4f0"
+        # Theme + language are loaded from external JSON files and persisted via
+        # QSettings so the user's choices survive app restarts.
+        self.settings = QSettings("AdbFastboot", "Community")
+
+        # Восстанавливаем геометрию окна из прошлой сессии.
+        # Если сохранённых данных нет — restoreGeometry() просто ничего не сделает.
+        # Используем QByteArray явно — saveGeometry() возвращает QByteArray, и при
+        # восстановлении через QSettings.value нужно запрашивать тот же тип.
+        from PyQt5.QtCore import QByteArray
+        saved_geometry = self.settings.value("window/geometry", QByteArray(), type=QByteArray)
+        if saved_geometry and not saved_geometry.isEmpty():
+            self.restoreGeometry(saved_geometry)
+
+        self.themes = self.load_themes()
+        if not self.themes:
+            # Hard fallback so the app is still usable if themes.json is missing.
+            self.themes = {
+                "Gray (Default)": {
+                    "main_bg": "#1a1a1a", "button_bg": "#3a3a3a",
+                    "button_text": "#cccccc", "button_hover_bg": "#cccccc",
+                    "button_hover_text": "#111111", "console_bg": "#141414",
+                    "console_text": "#cccccc", "label_text": "#cccccc",
+                    "group_border": "#cccccc", "group_text": "#cccccc",
+                    "status_online": "#51cf66", "status_offline": "#aaaaaa",
+                    "progress_bg": "#cccccc"
+                }
             }
-        }
-        
-        self.current_theme = "Gray (Default)"
+
+        # Restore saved theme (or fall back to Gray (Default) if missing/invalid).
+        saved_theme = self.settings.value("theme", "Gray (Default)", type=str)
+        if saved_theme not in self.themes:
+            saved_theme = "Gray (Default)"
+        self.current_theme = saved_theme
         self.gsi_image_path = None
-        self.current_lang = "en"
+        self.miui_folder_path = None
+        # Путь к platform-tools (где лежат adb.exe + fastboot.exe).
+        # Если пусто — используется system PATH. Сохраняется в QSettings.
+        self.platform_tools_path = self.settings.value('paths/platform_tools', '', type=str)
+        # Restore saved language (defaults to "en").
+        saved_lang = self.settings.value("language", "en", type=str)
+        self.current_lang = saved_lang if saved_lang in ("en", "ru") else "en"
         self.lang = {}
         
         central_widget = QWidget()
@@ -2724,6 +2818,7 @@ class ADBLiteApp(QMainWindow):
         
         self.create_device_tab()
         self.create_gsi_tab()
+        self.create_miui_tab()
         self.create_partition_tab()
         self.create_info_tab()
         
@@ -2740,13 +2835,37 @@ class ADBLiteApp(QMainWindow):
         # Загружаем язык и применяем перевод ПОСЛЕ создания всех виджетов
         self.load_language()
         self.update_ui_texts(update_theme_selector=True)
-        
+
+        # Синхронизируем селекторы языка и темы с восстановленными из QSettings
+        # значениями. Сигналы блокируем, чтобы не вызвать повторный change_*.
+        self.lang_selector.blockSignals(True)
+        self.lang_selector.setCurrentText(self.current_lang)
+        self.lang_selector.blockSignals(False)
+
+        self.set_theme_by_original_name(self.current_theme)
+
         self.apply_theme()
+
+        # Восстанавливаем активную вкладку из прошлой сессии.
+        saved_tab = self.settings.value("window/active_tab", 0, type=int)
+        if 0 <= saved_tab < self.tab_widget.count():
+            self.tab_widget.setCurrentIndex(saved_tab)
         
         # Авто-проверка обновлений (тихо, не чаще раза в сутки).
         # Задержка 3с чтобы GUI успел показаться и не блокировать старт.
         QTimer.singleShot(3000, self.check_for_updates_auto)
         
+    def closeEvent(self, event):
+        """Сохраняем геометрию окна и активную вкладку перед закрытием,
+        чтобы при следующем запуске приложение открылось в том же виде."""
+        try:
+            self.settings.setValue("window/geometry", self.saveGeometry())
+            self.settings.setValue("window/active_tab", self.tab_widget.currentIndex())
+            self.settings.sync()
+        except Exception as e:
+            print(f"Failed to save window state: {e}")
+        super().closeEvent(event)
+
     def get_icon_path(self):
         """Получение пути к иконке"""
         if getattr(sys, 'frozen', False):
@@ -2772,6 +2891,47 @@ class ADBLiteApp(QMainWindow):
                 return path
         return None
         
+    def load_themes(self):
+        """Load theme palette definitions from themes.json located next to the
+        script (or next to the frozen exe). Returns an ordered dict
+        { theme_name: { color_key: value, ... }, ... }. The `_meta` section
+        (if present) is skipped. On any error returns an empty dict and the
+        caller falls back to the hard-coded Gray theme."""
+        if getattr(sys, 'frozen', False):
+            base_path = os.path.dirname(sys.executable)
+        else:
+            base_path = os.path.dirname(os.path.abspath(__file__))
+
+        themes_file = os.path.join(base_path, "themes.json")
+        try:
+            with open(themes_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            print(f"Themes file not found: {themes_file}")
+            return {}
+        except Exception as e:
+            print(f"Error loading themes: {e}")
+            return {}
+
+        # Required color keys per theme — anything missing falls back to Gray.
+        required_keys = {
+            "main_bg", "button_bg", "button_text", "button_hover_bg",
+            "button_hover_text", "console_bg", "console_text", "label_text",
+            "group_border", "group_text", "status_online", "status_offline",
+            "progress_bg"
+        }
+        themes = {}
+        for name, palette in data.items():
+            if name.startswith("_"):  # skip _meta and other reserved keys
+                continue
+            if not isinstance(palette, dict):
+                continue
+            if not required_keys.issubset(palette.keys()):
+                print(f"Theme '{name}' is missing keys, skipping")
+                continue
+            themes[name] = palette
+        return themes
+
     def load_language(self):
         # Получаем путь к директории где находится скрипт
         if getattr(sys, 'frozen', False):
@@ -2803,6 +2963,9 @@ class ADBLiteApp(QMainWindow):
                 if self.current_theme != original_name:
                     self.current_theme = original_name
                     self.apply_theme()
+                    # Сохраняем выбранную тему между запусками
+                    self.settings.setValue("theme", original_name)
+                    self.settings.sync()
                     self.log(f"{self.tr('theme_changed')}: {original_name}")
                 break
 
@@ -2818,8 +2981,9 @@ class ADBLiteApp(QMainWindow):
         # Вкладки
         self.tab_widget.setTabText(0, self.tr("device_tab"))
         self.tab_widget.setTabText(1, self.tr("gsi_tab"))
-        self.tab_widget.setTabText(2, self.tr("partitions_tab"))
-        self.tab_widget.setTabText(3, self.tr("info_tab"))
+        self.tab_widget.setTabText(2, self.tr("miui_tab"))
+        self.tab_widget.setTabText(3, self.tr("partitions_tab"))
+        self.tab_widget.setTabText(4, self.tr("info_tab"))
         
         # Верхняя панель - обновляем все QLabel по objectName
         for obj_name, key in [("lang_label", "language"),
@@ -2908,6 +3072,81 @@ class ADBLiteApp(QMainWindow):
         if hasattr(self, 'slot_info_label'):
             self.slot_info_label.setText(self.tr("check_slot_text"))
         
+        # MIUI вкладка
+        # Platform-tools группа на MIUI вкладке
+        miui_pt_group = self.findChild(QGroupBox, "miui_platform_tools_group")
+        if miui_pt_group:
+            miui_pt_group.setTitle(self.tr("miui_platform_tools_group"))
+        miui_pt_path_label = self.findChild(QLabel, "miui_platform_tools_path_label")
+        if miui_pt_path_label:
+            miui_pt_path_label.setText(self.tr("miui_platform_tools_path_label"))
+        btn_miui_pt_browse = self.findChild(QPushButton, "btn_miui_pt_browse")
+        if btn_miui_pt_browse:
+            btn_miui_pt_browse.setText(self.tr("miui_platform_tools_browse_btn"))
+        miui_platform_tools_help = self.findChild(QLabel, "miui_platform_tools_help")
+        if miui_platform_tools_help:
+            miui_platform_tools_help.setText(self.tr("miui_platform_tools_help_text"))
+        # Метку текущего пути тоже обновляем — чтобы Not set был переведён
+        if hasattr(self, "miui_platform_tools_label"):
+            if self.platform_tools_path:
+                self.miui_platform_tools_label.setText(self.platform_tools_path)
+            else:
+                self.miui_platform_tools_label.setText(self.tr("miui_platform_tools_empty"))
+        # Селектор режима прошивки
+        miui_flash_mode_label = self.findChild(QLabel, "miui_flash_mode_label")
+        if miui_flash_mode_label:
+            miui_flash_mode_label.setText(self.tr("miui_flash_mode_label"))
+        if hasattr(self, "miui_flash_mode_selector"):
+            # Перестраиваем подписи, сохраняя выбор
+            current_data = self.miui_flash_mode_selector.currentData()
+            self.miui_flash_mode_selector.blockSignals(True)
+            self.miui_flash_mode_selector.clear()
+            for label_key, data in [("miui_flash_mode_all", "all"),
+                                    ("miui_flash_mode_except_data", "except_data"),
+                                    ("miui_flash_mode_lock", "lock"),
+                                    ("miui_flash_mode_manual", "manual")]:
+                self.miui_flash_mode_selector.addItem(self.tr(label_key), data)
+            # Восстанавливаем выбор если возможно
+            for i in range(self.miui_flash_mode_selector.count()):
+                if self.miui_flash_mode_selector.itemData(i) == current_data:
+                    self.miui_flash_mode_selector.setCurrentIndex(i)
+                    break
+            self.miui_flash_mode_selector.blockSignals(False)
+
+        miui_info_label = self.findChild(QLabel, "miui_info_label")
+        if miui_info_label:
+            miui_info_label.setText(self.tr("miui_info_text"))
+        miui_download_group = self.findChild(QGroupBox, "miui_download_group")
+        if miui_download_group:
+            miui_download_group.setTitle(self.tr("miui_download_group"))
+        miui_model_label = self.findChild(QLabel, "miui_model_label")
+        if miui_model_label:
+            miui_model_label.setText(self.tr("miui_model_label"))
+        btn_miui_open = self.findChild(QPushButton, "btn_miui_open")
+        if btn_miui_open:
+            btn_miui_open.setText(self.tr("miui_open_btn"))
+        btn_miui_copy = self.findChild(QPushButton, "btn_miui_copy")
+        if btn_miui_copy:
+            btn_miui_copy.setText(self.tr("miui_copy_btn"))
+        miui_help_label = self.findChild(QLabel, "miui_help_label")
+        if miui_help_label:
+            miui_help_label.setText(self.tr("miui_help_text"))
+        miui_flash_group = self.findChild(QGroupBox, "miui_flash_group")
+        if miui_flash_group:
+            miui_flash_group.setTitle(self.tr("miui_flash_group"))
+        btn_miui_select_folder = self.findChild(QPushButton, "btn_miui_select_folder")
+        if btn_miui_select_folder:
+            btn_miui_select_folder.setText(self.tr("miui_select_folder_btn"))
+        miui_folder_label = self.findChild(QLabel, "miui_folder_label")
+        if miui_folder_label:
+            miui_folder_label.setText(self.tr("miui_no_folder"))
+        btn_miui_flash = self.findChild(QPushButton, "btn_miui_flash")
+        if btn_miui_flash:
+            btn_miui_flash.setText(self.tr("miui_flash_btn"))
+        miui_flash_help = self.findChild(QLabel, "miui_flash_help")
+        if miui_flash_help:
+            miui_flash_help.setText(self.tr("miui_flash_help_text"))
+
         # Partition вкладка
         self.btn_partition_manager_quick.setText(self.tr("open_partition_manager"))
         if hasattr(self, 'partition_info_label'):
@@ -2969,6 +3208,9 @@ class ADBLiteApp(QMainWindow):
         
         self.lang_selector = QComboBox()
         self.lang_selector.addItems(["en", "ru"])
+        # Устанавливаем сохранённый язык ДО подключения сигнала, чтобы
+        # change_language не сработал лишний раз при старте.
+        self.lang_selector.setCurrentText(self.current_lang)
         self.lang_selector.currentTextChanged.connect(self.change_language)
         layout.addWidget(self.lang_selector)
         
@@ -3167,6 +3409,440 @@ class ADBLiteApp(QMainWindow):
         layout.addStretch()
         self.tab_widget.addTab(tab, "GSI Installer")
     
+    def create_miui_tab(self):
+        """Вкладка прошивки MIUI/HyperOS с переходом на miuirom.org.
+
+        Прошивки Xiaomi распространяются в виде fastboot-зипов, которые
+        пользователь скачивает с сайта. После скачивания и распаковки
+        можно либо запустить .bat/.sh из архива (flash_all.bat), либо
+        дать этой вкладке распакованную папку — приложение само запустит
+        последовательность fastboot-команд для всех разделов."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(15)
+
+        info_frame = QFrame()
+        info_frame.setFrameStyle(QFrame.StyledPanel)
+        info_layout = QHBoxLayout(info_frame)
+        info_label = QLabel("MIUI / HyperOS firmware downloader & flasher")
+        info_label.setObjectName("miui_info_label")
+        info_label.setStyleSheet("font-weight: bold;")
+        info_layout.addWidget(info_label)
+        layout.addWidget(info_frame)
+
+        # --- Блок 0: путь к platform-tools -----------------------------
+        pt_group = QGroupBox("Platform-tools path")
+        pt_group.setObjectName("miui_platform_tools_group")
+        pt_layout = QVBoxLayout()
+
+        pt_row = QHBoxLayout()
+        pt_label = QLabel("Path:")
+        pt_label.setObjectName("miui_platform_tools_path_label")
+        pt_row.addWidget(pt_label)
+
+        self.miui_platform_tools_label = QLabel(self.platform_tools_path if self.platform_tools_path else "Not set (using system PATH)")
+        self.miui_platform_tools_label.setObjectName("miui_platform_tools_label")
+        self.miui_platform_tools_label.setStyleSheet("font-family: monospace;")
+        pt_row.addWidget(self.miui_platform_tools_label, 1)
+
+        self.btn_miui_pt_browse = QPushButton("Browse...")
+        self.btn_miui_pt_browse.setObjectName("btn_miui_pt_browse")
+        self.btn_miui_pt_browse.clicked.connect(self.miui_browse_platform_tools)
+        pt_row.addWidget(self.btn_miui_pt_browse)
+        pt_layout.addLayout(pt_row)
+
+        self.miui_platform_tools_help = QLabel("")
+        self.miui_platform_tools_help.setObjectName("miui_platform_tools_help")
+        self.miui_platform_tools_help.setWordWrap(True)
+        pt_layout.addWidget(self.miui_platform_tools_help)
+
+        pt_group.setLayout(pt_layout)
+        layout.addWidget(pt_group)
+
+        # --- Блок 1: выбор модели и переход на сайт -------------------
+        model_group = QGroupBox("Download firmware")
+        model_group.setObjectName("miui_download_group")
+        model_layout = QVBoxLayout()
+
+        model_row = QHBoxLayout()
+        model_label = QLabel("Model:")
+        model_label.setObjectName("miui_model_label")
+        model_row.addWidget(model_label)
+
+        # Самые популярные модели — slug это часть URL miuirom.org/ru/phones/<slug>
+        self.miui_models = [
+            ("Redmi A1+",         "redmi-a1"),
+            ("Redmi A2",          "redmi-a2"),
+            ("Redmi A3",          "redmi-a3"),
+            ("Redmi 9A",          "redmi-9a"),
+            ("Redmi 9T",          "redmi-9t"),
+            ("Redmi 10A",         "redmi-10a"),
+            ("Redmi 10C",         "redmi-10c"),
+            ("Redmi 12C",         "redmi-12c"),
+            ("Redmi 13C",         "redmi-13c"),
+            ("Redmi Note 8",      "redmi-note-8"),
+            ("Redmi Note 9 Pro",  "redmi-note-9-pro"),
+            ("Redmi Note 10",     "redmi-note-10"),
+            ("Redmi Note 11",     "redmi-note-11"),
+            ("Redmi Note 12",     "redmi-note-12"),
+            ("Redmi Note 13",     "redmi-note-13"),
+            ("POCO M3",           "poco-m3"),
+            ("POCO M5s",          "poco-m5s"),
+            ("POCO X3 Pro",       "poco-x3-pro"),
+            ("POCO X5 Pro",       "poco-x5-pro"),
+            ("Xiaomi 11 Lite",    "xiaomi-11-lite"),
+            ("Xiaomi 12",         "xiaomi-12"),
+            ("Xiaomi 13",         "xiaomi-13"),
+            ("Xiaomi 14",         "xiaomi-14"),
+        ]
+        self.miui_model_selector = QComboBox()
+        self.miui_model_selector.setObjectName("miui_model_selector")
+        for display_name, slug in self.miui_models:
+            self.miui_model_selector.addItem(display_name, slug)
+        model_row.addWidget(self.miui_model_selector, 1)
+        model_layout.addLayout(model_row)
+
+        # Кнопки: открыть страницу / скопировать ссылку
+        btn_row = QHBoxLayout()
+        self.btn_miui_open = QPushButton("Open download page")
+        self.btn_miui_open.setObjectName("btn_miui_open")
+        self.btn_miui_open.clicked.connect(self.miui_open_download_page)
+        btn_row.addWidget(self.btn_miui_open)
+
+        self.btn_miui_copy = QPushButton("Copy link")
+        self.btn_miui_copy.setObjectName("btn_miui_copy")
+        self.btn_miui_copy.clicked.connect(self.miui_copy_link)
+        btn_row.addWidget(self.btn_miui_copy)
+
+        model_layout.addLayout(btn_row)
+
+        # Подсказка
+        self.miui_help_label = QLabel("")
+        self.miui_help_label.setObjectName("miui_help_label")
+        self.miui_help_label.setWordWrap(True)
+        model_layout.addWidget(self.miui_help_label)
+
+        model_group.setLayout(model_layout)
+        layout.addWidget(model_group)
+
+        # --- Блок 2: прошивка распакованной папки ---------------------
+        flash_group = QGroupBox("Flash extracted firmware")
+        flash_group.setObjectName("miui_flash_group")
+        flash_layout = QVBoxLayout()
+
+        folder_row = QHBoxLayout()
+        self.miui_folder_label = QLabel("No folder selected")
+        self.miui_folder_label.setObjectName("miui_folder_label")
+        self.miui_folder_label.setStyleSheet("font-family: monospace;")
+        folder_row.addWidget(self.miui_folder_label, 1)
+
+        self.btn_miui_select_folder = QPushButton("Select firmware folder")
+        self.btn_miui_select_folder.setObjectName("btn_miui_select_folder")
+        self.btn_miui_select_folder.clicked.connect(self.miui_select_firmware_folder)
+        folder_row.addWidget(self.btn_miui_select_folder)
+        flash_layout.addLayout(folder_row)
+
+        # Селектор режима прошивки. Заполняется автоматически при выборе папки
+        # на основе найденных Xiaomi-скриптов.
+        mode_row = QHBoxLayout()
+        mode_label = QLabel("Flash mode:")
+        mode_label.setObjectName("miui_flash_mode_label")
+        mode_row.addWidget(mode_label)
+        self.miui_flash_mode_selector = QComboBox()
+        self.miui_flash_mode_selector.setObjectName("miui_flash_mode_selector")
+        # Дефолтный пункт — manual. После выбора папки обновится.
+        self.miui_flash_mode_selector.addItem(self.tr("miui_flash_mode_manual"), "manual")
+        mode_row.addWidget(self.miui_flash_mode_selector, 1)
+        flash_layout.addLayout(mode_row)
+
+
+        self.btn_miui_flash = QPushButton("Flash firmware (fastboot)")
+        self.btn_miui_flash.setObjectName("btn_miui_flash")
+        self.btn_miui_flash.clicked.connect(self.miui_flash_firmware)
+        flash_layout.addWidget(self.btn_miui_flash)
+
+        self.miui_flash_help = QLabel("")
+        self.miui_flash_help.setObjectName("miui_flash_help")
+        self.miui_flash_help.setWordWrap(True)
+        flash_layout.addWidget(self.miui_flash_help)
+
+        flash_group.setLayout(flash_layout)
+        layout.addWidget(flash_group)
+
+        layout.addStretch()
+        self.tab_widget.addTab(tab, "MIUI/HyperOS")
+
+    def miui_get_url(self):
+        """Возвращает URL страницы прошивок для выбранной модели на miuirom.org."""
+        idx = self.miui_model_selector.currentIndex()
+        if idx < 0:
+            return ""
+        slug = self.miui_model_selector.itemData(idx)
+        if not slug:
+            return ""
+        return f"https://miuirom.org/ru/phones/{slug}"
+
+    def miui_open_download_page(self):
+        url = self.miui_get_url()
+        if not url:
+            return
+        self.log(self.tr("miui_opening").format(url=url))
+        try:
+            webbrowser.open(url)
+        except Exception as e:
+            self.log(f"Failed to open browser: {e}")
+
+    def miui_copy_link(self):
+        url = self.miui_get_url()
+        if not url:
+            return
+        from PyQt5.QtWidgets import QApplication as _QApp
+        cb = _QApp.clipboard()
+        cb.setText(url)
+        self.log(self.tr("miui_link_copied").format(url=url))
+
+
+    def miui_browse_platform_tools(self):
+        """Открывает диалог выбора папки platform-tools и сохраняет путь."""
+        folder = QFileDialog.getExistingDirectory(
+            self, self.tr("miui_platform_tools_browse_title"), self.platform_tools_path or ""
+        )
+        if not folder:
+            return
+        # Проверяем, что внутри действительно есть adb/fastboot (с учётом ОС).
+        exe_suffix = ".exe" if IS_WINDOWS else ""
+        has_adb = os.path.isfile(os.path.join(folder, f"adb{exe_suffix}"))
+        has_fastboot = os.path.isfile(os.path.join(folder, f"fastboot{exe_suffix}"))
+        if not (has_adb and has_fastboot):
+            self.log(self.tr("miui_platform_tools_not_detected"))
+        else:
+            self.log(self.tr("miui_platform_tools_detected"))
+        self.platform_tools_path = folder
+        self.settings.setValue("paths/platform_tools", folder)
+        self.settings.sync()
+        self.miui_platform_tools_label.setText(folder if folder else self.tr("miui_platform_tools_empty"))
+
+    def miui_get_platform_tools_prefix(self):
+        """Возвращает shell-префикс, добавляющий platform-tools в PATH,
+        либо пустую строку если путь не задан.
+
+        На Windows:   set "PATH=C:\\platform-tools;%PATH%" &&
+        На Linux/Mac: PATH=/opt/platform-tools:$PATH """
+        p = self.platform_tools_path
+        if not p:
+            return ""
+        if IS_WINDOWS:
+            # Экранируем обратные слеши для cmd.exe и кавычки вокруг пути,
+            # чтобы корректно работало с пробелами.
+            return f'set "PATH={p};%PATH%" && '
+        else:
+            return f'PATH="{p}:$PATH" '
+
+    def miui_get_fastboot_cmd(self):
+        """Возвращает 'fastboot' либо полный путь к fastboot из platform-tools."""
+        p = self.platform_tools_path
+        if p:
+            exe = "fastboot.exe" if IS_WINDOWS else "fastboot"
+            full = os.path.join(p, exe)
+            if os.path.isfile(full):
+                # Кавычим путь — он может содержать пробелы.
+                return f'"{full}"'
+        return "fastboot"
+
+    def miui_detect_flash_scripts(self, folder):
+        """Сканирует папку с распакованной прошивкой Xiaomi и возвращает dict:
+            {"all": "flash_all.bat", "except_data": "flash_all_except_data.bat",
+             "lock": "flash_all_lock.bat"}
+        Значения — имя найденного скрипта или None если скрипта нет.
+        Учитывает альтернативные имена: flash_all_except_storage.* (старая
+        Xiaomi-номенклатура) и расширения .bat (Windows) / .sh (Linux/Mac)."""
+        result = {"all": None, "except_data": None, "lock": None}
+        if not folder or not os.path.isdir(folder):
+            return result
+        try:
+            files = set(os.listdir(folder))
+        except OSError:
+            return result
+
+        # На Windows скрипты имеют расширение .bat, на Linux/Mac — .sh.
+        # Но проверяем оба варианта — пользователь может распаковывать архив
+        # сделанный на другой ОС.
+        exts = [".bat", ".sh"]
+        candidates = {
+            "all": ["flash_all"],
+            "except_data": ["flash_all_except_data", "flash_all_except_storage"],
+            "lock": ["flash_all_lock"],
+        }
+        for key, names in candidates.items():
+            for name in names:
+                for ext in exts:
+                    fname = name + ext
+                    if fname in files:
+                        result[key] = fname
+                        break
+                if result[key]:
+                    break
+        return result
+
+    def miui_refresh_flash_mode_selector(self, scripts):
+        """Перестраивает список режимов прошивки в зависимости от того,
+        какие скрипты нашлись в выбранной папке. Сохраняет текущий выбор
+        если он всё ещё доступен."""
+        current = self.miui_flash_mode_selector.currentData() if self.miui_flash_mode_selector.count() else "manual"
+        self.miui_flash_mode_selector.blockSignals(True)
+        self.miui_flash_mode_selector.clear()
+        # Порядок важен: сначала скрипты (предпочтительный способ), потом manual.
+        items = []
+        if scripts["all"]:
+            items.append(("miui_flash_mode_all", "all"))
+        if scripts["except_data"]:
+            items.append(("miui_flash_mode_except_data", "except_data"))
+        if scripts["lock"]:
+            items.append(("miui_flash_mode_lock", "lock"))
+        items.append(("miui_flash_mode_manual", "manual"))
+        for label_key, data in items:
+            self.miui_flash_mode_selector.addItem(self.tr(label_key), data)
+        # Восстанавливаем выбор если возможно, иначе первый доступный.
+        restored = False
+        for i in range(self.miui_flash_mode_selector.count()):
+            if self.miui_flash_mode_selector.itemData(i) == current:
+                self.miui_flash_mode_selector.setCurrentIndex(i)
+                restored = True
+                break
+        if not restored:
+            self.miui_flash_mode_selector.setCurrentIndex(0)
+        self.miui_flash_mode_selector.blockSignals(False)
+
+    def miui_select_firmware_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, self.tr("miui_select_folder_title"), ""
+        )
+        if not folder:
+            return
+        # Проверяем, что внутри есть хотя бы один .img файл — типичный признак
+        # распакованного fastboot-зипа Xiaomi.
+        try:
+            files = os.listdir(folder)
+        except OSError as e:
+            self.log(f"Cannot read folder: {e}")
+            return
+        img_files = [f for f in files if f.lower().endswith(".img")]
+        if not img_files:
+            self.log(self.tr("miui_no_img_warning"))
+        self.miui_folder_path = folder
+        self.miui_folder_label.setText(folder)
+
+        # Сканируем стандартные Xiaomi-скрипты прошивки.
+        scripts = self.miui_detect_flash_scripts(folder)
+        self.miui_refresh_flash_mode_selector(scripts)
+
+        # Логируем результат сканирования.
+        found_scripts = [v for v in scripts.values() if v]
+        if found_scripts:
+            self.log(self.tr("miui_scripts_detected").format(scripts=", ".join(found_scripts)))
+        self.log(self.tr("miui_folder_selected").format(folder=folder, count=len(img_files)))
+
+    def miui_flash_firmware(self):
+        """Прошивает MIUI/HyperOS firmware.
+
+        Если в выбранной папке есть оригинальные Xiaomi-скрипты
+        (flash_all.bat / flash_all.sh и варианты) — запускает выбранный скрипт,
+        предварительно добавив platform-tools в PATH (иначе .bat-ники на свежей
+        Windows падают с 'fastboot is not recognized').
+
+        Если скриптов нет (или выбран режим Manual) — строит цепочку
+        fastboot flash <partition> <file>.img вручную."""
+        folder = getattr(self, "miui_folder_path", None)
+        if not folder or not os.path.isdir(folder):
+            self.show_message_box(self.tr("error_title"),
+                                  self.tr("miui_no_folder_msg"),
+                                  QMessageBox.Warning)
+            return
+        if self.device_state not in ('FASTBOOT', 'FASTBOOTD'):
+            self.show_message_box(self.tr("error_title"),
+                                  self.tr("wrong_mode_fastboot"),
+                                  QMessageBox.Warning)
+            return
+
+        # Какой режим выбрал пользователь.
+        mode = self.miui_flash_mode_selector.currentData() if self.miui_flash_mode_selector.count() else "manual"
+        if not mode:
+            mode = "manual"
+
+        # Сканируем скрипты заново — папка могла измениться после выбора.
+        scripts = self.miui_detect_flash_scripts(folder)
+
+        # Если выбран режим-скрипт, но самого скрипта в папке нет — сообщаем.
+        if mode in ("all", "except_data", "lock") and not scripts[mode]:
+            self.show_message_box(self.tr("error_title"),
+                                  self.tr("miui_no_script_msg").format(mode=mode),
+                                  QMessageBox.Warning)
+            return
+
+        # Подтверждение перед прошивкой — необратимая операция.
+        if mode == "manual":
+            img_files = sorted(f for f in os.listdir(folder)
+                              if f.lower().endswith(".img"))
+            if not img_files:
+                self.show_message_box(self.tr("error_title"),
+                                      self.tr("miui_no_img_msg"),
+                                      QMessageBox.Warning)
+                return
+            names_preview = ", ".join(os.path.splitext(f)[0] for f in img_files[:8])
+            if len(img_files) > 8:
+                names_preview += f" ... (+{len(img_files) - 8} more)"
+            reply = self.show_message_box(
+                self.tr("miui_flash_confirm_title"),
+                self.tr("miui_flash_confirm_msg").format(
+                    count=len(img_files),
+                    partitions=names_preview
+                ),
+                QMessageBox.Question, QMessageBox.Yes | QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+        else:
+            script_name = scripts[mode]
+            reply = self.show_message_box(
+                self.tr("miui_flash_confirm_title"),
+                self.tr("miui_flash_script_confirm_msg").format(script=script_name),
+                QMessageBox.Question, QMessageBox.Yes | QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        # Строим команду.
+        path_prefix = self.miui_get_platform_tools_prefix()
+        if mode == "manual":
+            fastboot = self.miui_get_fastboot_cmd()
+            img_files = sorted(f for f in os.listdir(folder)
+                              if f.lower().endswith(".img"))
+            parts = []
+            for fname in img_files:
+                partition = os.path.splitext(fname)[0]
+                abs_path = os.path.join(folder, fname)
+                parts.append(f'{fastboot} flash {partition} "{abs_path}"')
+            # cd в папку чтобы можно было запускать даже если в путях есть пробелы
+            cd_cmd = f'cd /d "{folder}"' if IS_WINDOWS else f'cd "{folder}"'
+            cmd_string = f"{path_prefix}{cd_cmd} && " + " && ".join(parts)
+            self.log(self.tr("miui_flash_start").format(count=len(img_files)))
+            description = "MIUI/HyperOS firmware flash (manual)"
+        else:
+            script_name = scripts[mode]
+            # Скрипты Xiaomi используют относительные пути к .img файлам,
+            # поэтому обязательно делаем cd в папку с прошивкой.
+            if IS_WINDOWS:
+                # cmd.exe: cd /d "folder" && set "PATH=..." && script.bat
+                # Порядок важен: cd сначала, потом PATH (т.к. set затронет только текущую сессию cmd)
+                cmd_string = f'cd /d "{folder}" && {path_prefix}"{script_name}"'
+            else:
+                # bash/sh: cd "folder" && PATH=... sh script.sh
+                cmd_string = f'cd "{folder}" && {path_prefix}sh "./{script_name}"'
+            self.log(self.tr("miui_flash_script_start").format(script=script_name, mode=mode))
+            description = f"MIUI/HyperOS firmware flash ({script_name})"
+
+        self.run_with_thread(cmd_string, description)
+
     def create_partition_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -3276,6 +3952,8 @@ class ADBLiteApp(QMainWindow):
         self.console = QTextEdit()
         self.console.setReadOnly(True)
         self.console.setFont(QFont("Consolas", 9))
+        # Подсветка строк по ключевым словам (error/warn/ok).
+        self.console_highlighter = ConsoleHighlighter(self.console.document())
         layout.addWidget(self.console)
         
         return panel
@@ -3505,6 +4183,9 @@ class ADBLiteApp(QMainWindow):
     
     def change_language(self, lang_code):
         self.current_lang = lang_code
+        # Сохраняем выбранный язык между запусками
+        self.settings.setValue("language", lang_code)
+        self.settings.sync()
         self.load_language()
         # Сохраняем текущую тему до обновления UI
         current_theme = self.current_theme
