@@ -1,7 +1,10 @@
 {
-  "version": "5.1.0",
-  "date": "2026-07-24",
-  "size_kb": 181,
-  "download_url": "https://github.com/kilib1k/Adb_n_Fastboot/releases/download/Release_5.1.0/AdbFastboot.py",
-  "changelog": "v5.1 — What's new\n\n- Removed unnecessary code \n- Added colors to Logcat \n- Added Linux support\n\nThanks for using Community Edition!\n\nAnd please download the new Localization.json file\n\nhttps://github.com/kilib1k/Adb_n_Fastboot/releases/tag/Release_5.1.0"
+  "version": "5.2.0",
+  "changelog": "v5.2.0\n\n- Themes extracted to themes.json (16 themes: 8 original + 8 new)\n- New MIUI/HyperOS firmware flasher tab with miuirom.org integration (Beta)\n- Platform-tools path setting for flash_all.bat/.sh compatibility\n- Console error/warning/success highlighting\n- Window geometry + active tab persistence\n- Multi-file auto-update (AdbFastboot.py + localization.json + themes.json)\n- Added Config System\n- 8 new localization keys for update system",
+  "date": "2026-07-25",
+  "files": [
+    {"name": "AdbFastboot.py",    "url": "https://github.com/kilib1k/Adb_n_Fastboot/releases/download/Release_5.2.0/AdbFastboot.py"},
+    {"name": "localization.json", "url": "https://github.com/kilib1k/Adb_n_Fastboot/releases/download/Release_5.2.0/localization.json"},
+    {"name": "themes.json",       "url": "https://github.com/kilib1k/Adb_n_Fastboot/releases/download/Release_5.2.0/themes.json"}
+  ],
 }
