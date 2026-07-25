@@ -117,6 +117,16 @@ The app checks `https://raw.githubusercontent.com/kilib1k/Adb_n_Fastboot/main/up
 
 ## 📜 Changelog
 
+### v5.2 (2026-07-25)
+- ➕ **Added MIUI/HyperOS firmware flasher tab** (with miuirom.org integration, Beta)
+- ➕ **Added Config System**
+- ➕ **Added console error/warning/success highlighting**
+- ➕ **Added Platform-tools path setting** (for `flash_all.bat` / `.sh` compatibility)
+- ➕ **Added window geometry and active tab persistence**
+- ➕ **Added multi-file auto-update** (`AdbFastboot.py` + `localization.json` + `themes.json`)
+- ➕ **Added 8 new localization keys** for update system
+- 🔄 **Themes extracted to `themes.json`** (16 themes: 8 original + 8 new)
+
 ### v5.1 (2026-07-24) — Community Edition
 - ➕ **Added colors to Logcat**
 - ➕ **Added Linux support**
