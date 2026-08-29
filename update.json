@@ -6,5 +6,5 @@
     {"name": "AdbFastboot.py",    "url": "https://github.com/kilib1k/Adb_n_Fastboot/releases/download/Release_5.2.0/AdbFastboot.py"},
     {"name": "localization.json", "url": "https://github.com/kilib1k/Adb_n_Fastboot/releases/download/Release_5.2.0/localization.json"},
     {"name": "themes.json",       "url": "https://github.com/kilib1k/Adb_n_Fastboot/releases/download/Release_5.2.0/themes.json"}
-  ],
+  ]
 }
