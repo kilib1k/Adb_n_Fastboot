@@ -5,7 +5,7 @@
 ![PyQt5](https://img.shields.io/badge/GUI-PyQt5-green)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 
-**Бесплатный GUI для ADB и Fastboot с открытым кодом** — для тех, кто хочет удобство десктоп-утилиты Изначальная идея — [@LineXin](https://github.com/LineXin) [Telegram](https://t.me/LineXin1); Community Edition разрабатывает и поддерживает [@Kilib1k](https://github.com/kilib1k) [Telegram](https://t.me/Kilib1k).
+**Бесплатный GUI для ADB и Fastboot с открытым кодом** — для тех, кто хочет удобство десктоп-утилиты Изначальная идея — [@LineXin](https://github.com/LineXin) [Telegram](https://t.me/LineXin1); Community Edition разрабатывает и поддерживает [@Kilib1k](https://github.com/kilib1k) [Telegram](https://t.me/Kilib1k) и [@LineXin](https://github.com/LineXin) [Telegram](https://t.me/LineXin1).
 
 **[Read in English](README.md)**
 
