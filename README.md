@@ -1,9 +1,9 @@
 # ADB & Fastboot — Community Edition
 
-![Version](https://img.shields.io/badge/version-v5.1.0-blue)
+![Version](https://img.shields.io/badge/version-v5.2.0-blue)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![PyQt5](https://img.shields.io/badge/GUI-PyQt5-green)
-![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)
 
 **A free, open-source GUI for ADB & Fastboot** — built for power users who want the comfort of a desktop tool without memorizing dozens of command-line flags. Originally conceived by [@LineXin](https://github.com/LineXin) [Telegram](https://t.me/LineXin1); the Community Edition is maintained and extended by [@Kilib1k](https://github.com/kilib1k) [Telegram](https://t.me/Kilib1k) and [@LineXin](https://github.com/LineXin) [Telegram](https://t.me/LineXin1).
 
